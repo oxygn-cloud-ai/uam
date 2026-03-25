@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uam"
+version = "0.1.0"
+description = "Use Any Model with Claude Code — multi-backend model router with auto-discovery"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["aiohttp>=3.9"]
+
+[project.scripts]
+uam = "uam.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
