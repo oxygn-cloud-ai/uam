@@ -2,7 +2,7 @@
 
 **uam** (Use Any Model) is a multi-backend model router for Claude Code. It runs as a transparent HTTP proxy on `localhost:5100`, sitting between Claude Code and AI backends -- Anthropic, RunPod, OpenRouter, and local model servers. It swaps the default model, translates between Anthropic and OpenAI API formats, enforces model on/off state, and auto-discovers models from all configured backends.
 
-Version: 0.2.0
+Version: 0.3.1
 
 ---
 
@@ -121,6 +121,7 @@ Key responsibilities:
 - **Translation dispatch.** `_needs_translation()` checks the route's backend. Anthropic routes pass through directly; all others go through format translation.
 - **State caching.** Model state is cached in memory with a 5-second TTL (`_STATE_CACHE_TTL`) to avoid reading `models.json` from disk on every request. The cache is invalidated on state writes and refresh.
 - **Header management.** `_build_upstream_headers()` constructs headers per backend type: Anthropic gets `X-Api-Key` + `anthropic-version`; others get `Authorization: Bearer`. `_forward_response_headers()` forwards `x-*`, `anthropic-*`, and `request-id` response headers.
+- **JSON body validation.** All three body-reading endpoints (`handle_messages`, `handle_ask`, `handle_count_tokens`) validate JSON bodies with try/except, returning 400 with `"Invalid JSON body"` on malformed input.
 - **Error wrapping.** `_make_anthropic_error()` wraps upstream HTTP errors in Anthropic error format (`{type: "error", error: {type, message}}`).
 
 ### router.py -- ModelRouter
@@ -161,7 +162,7 @@ Key responsibilities:
 - **`get_config()`**: Reads config from disk. Falls back to `default_config()` if the file does not exist.
 - **`resolve_key()`**: Takes an environment variable name, returns its value via `os.environ.get()`. Never logs or stores the resolved value.
 - **`parse_listen()`**: Parses the `listen` field (format: `host:port`) into a tuple. Defaults to `127.0.0.1:5100`.
-- **Default config:** Includes Anthropic (api.anthropic.com), RunPod (empty accounts), OpenRouter (openrouter.ai/api), and local (probe ports 11434, 8000, 8080).
+- **Default config:** Includes Anthropic (api.anthropic.com), RunPod (empty accounts), OpenRouter (openrouter.ai/api), and local (probe ports 11434, 8000, 8080, 2242, 5000, 3000 covering Ollama, vLLM, Aphrodite, TabbyAPI, and TGI; `"servers": []` for explicit server URLs).
 
 ### discovery/anthropic.py -- Anthropic models
 
@@ -175,7 +176,7 @@ Hardcoded model registration. Always runs, requires no network calls.
 Discovers models running on RunPod vLLM pods via the RunPod GraphQL API.
 
 - Iterates over configured RunPod accounts.
-- Queries the GraphQL endpoint for all pods, filters to RUNNING pods with port 8000 exposed.
+- Queries the GraphQL endpoint for all pods, filters to RUNNING pods with port 8000 exposed. Port matching uses exact token matching via `re.split(r'[\s,/]+', ports)` to avoid substring false positives (e.g., "18000" no longer matches "8000").
 - Parses pod environment variables to extract `VLLM_API_KEY` (with `$RUNPOD_POD_ID` template substitution).
 - Probes each pod's `/v1/models` endpoint to discover served models.
 - Route keys follow the format: `runpod:{pod-name}/{model-id}`.
@@ -241,7 +242,7 @@ Backend configuration. Created by the `/uam setup` command. Stores connection de
     "api_key_env": "OPENROUTER_API_KEY"
   },
   "local": {
-    "probe_ports": [11434, 8000, 8080],
+    "probe_ports": [11434, 8000, 8080, 2242, 5000, 3000],
     "servers": []
   },
   "default_backend": "anthropic"
@@ -348,6 +349,7 @@ All errors returned by the proxy follow the Anthropic error format:
 | Model not found (ask)  | 404         | `model_not_found`       | `handle_ask`              |
 | Backend unreachable    | 502         | `proxy_error`           | All proxy handlers        |
 | Upstream HTTP error    | Varies      | `api_error`             | `_make_anthropic_error`   |
+| Invalid JSON body      | 400         | `invalid_request_error` | `handle_messages` / `handle_ask` / `handle_count_tokens` |
 | Invalid JSON (state)   | 400         | `invalid_request_error` | `handle_post_state`       |
 
 ### Resilience patterns
@@ -357,3 +359,13 @@ All errors returned by the proxy follow the Anthropic error format:
 - **JSON decode fallback.** When upstream error bodies are not valid JSON, `_make_anthropic_error()` decodes the raw bytes as UTF-8 and includes them in the error message.
 - **Token count estimation.** Non-Anthropic backends do not support `/v1/messages/count_tokens`. The proxy returns a rough estimate of ~4 characters per token rather than failing.
 - **State file resilience.** `load_state()` catches `JSONDecodeError` and `OSError`, returning clean defaults. A corrupted `models.json` does not crash the proxy.
+
+---
+
+## 10. Test Suite
+
+The project has 242 tests with 99% code coverage, run via `pytest`.
+
+- **Framework:** pytest with aioresponses for mocking async HTTP calls and hypothesis for property-based testing of format translation edge cases.
+- **Coverage:** All modules under `src/uam/` are tested, including proxy handlers, router resolution, discovery backends, state management, config loading, and format translation.
+- **Run:** `pytest` from the project root. Configuration is in `pyproject.toml`.

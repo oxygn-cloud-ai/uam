@@ -17,6 +17,7 @@ uam runs a transparent HTTP proxy on `localhost:5100` that intercepts Claude Cod
 - **Toggle models on/off** -- disable models you don't want cluttering the list
 - **Auto-start proxy** -- a SessionStart hook starts the proxy when Claude Code launches
 - **No CLI** -- everything happens via `/uam` and `/model` slash commands inside Claude Code
+- **Full test suite** -- 242 tests with 99% branch coverage (pytest, hypothesis, aioresponses)
 - **Security-first** -- config stores environment variable names, never actual API keys
 
 ---
@@ -38,6 +39,8 @@ uam runs a transparent HTTP proxy on `localhost:5100` that intercepts Claude Cod
 - Claude Code (CLI or desktop app)
 - pip (for installation)
 - At least one API key (Anthropic is required; RunPod, OpenRouter, and local servers are optional)
+
+Test dependencies are optional: `pip install -e ".[test]"` to run the test suite.
 
 ---
 
@@ -226,9 +229,7 @@ The main configuration file. Created by `/uam setup`, editable by hand.
   },
   "local": {
     "probe_ports": [11434, 8000, 8080, 2242, 5000, 3000],
-    "servers": [
-      "http://192.168.1.50:11434"
-    ]
+    "servers": []
   },
   "default_backend": "anthropic"
 }
@@ -517,6 +518,13 @@ python -m uam --skip-discovery # Anthropic-only mode (faster for development)
 ```
 
 The proxy runs on `http://127.0.0.1:5100`. Use curl to test endpoints directly.
+
+### Running Tests
+
+```bash
+pip install -e ".[test]"
+pytest tests/ -v --cov=uam --cov-report=term-missing --cov-branch
+```
 
 ---
 
