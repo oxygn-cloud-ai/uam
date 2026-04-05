@@ -72,6 +72,22 @@ class TestDiscoverAnthropic:
         for route in routes.values():
             assert route["api_key"] == ""
 
+    def test_discover_anthropic_alias_target_not_in_routes(self, monkeypatch):
+        """If an alias target is not in routes, the alias is not added."""
+        # Temporarily modify ALIASES to point to a nonexistent model
+        from uam.discovery import anthropic as anth_mod
+        orig_aliases = anth_mod.ALIASES
+        monkeypatch.setattr(anth_mod, "ALIASES", {"fake[1m]": "nonexistent-model"})
+        monkeypatch.setenv("ANTHROPIC_API_KEY_REAL", "sk-test")
+        config = {
+            "anthropic": {
+                "url": "https://api.anthropic.com",
+                "api_key_env": "ANTHROPIC_API_KEY_REAL",
+            }
+        }
+        routes = anth_mod.discover_anthropic(config)
+        assert "fake[1m]" not in routes
+
     def test_anthropic_aliases_constant(self):
         assert "claude-opus-4-6[1m]" in ALIASES
         assert ALIASES["claude-opus-4-6[1m]"] == "claude-opus-4-6"

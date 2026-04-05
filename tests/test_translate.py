@@ -274,6 +274,40 @@ class TestConvertMessage:
         assert tool_msgs[0]["tool_call_id"] == "t1"
         assert tool_msgs[1]["tool_call_id"] == "t2"
 
+    def test_convert_message_multiple_tool_results_with_text_and_list_content(self):
+        """Multiple tool_results plus non-tool content with list content in tool_result."""
+        payload = {
+            "model": "m",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Here are the results"},
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": [
+                            {"type": "text", "text": "result line 1"},
+                            {"type": "text", "text": "result line 2"},
+                        ],
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t2",
+                        "content": "simple result",
+                    },
+                ],
+            }],
+        }
+        result = anthropic_to_openai(payload)
+        # Should have: one user message for text, then two tool messages
+        user_msgs = [m for m in result["messages"] if m["role"] == "user"]
+        tool_msgs = [m for m in result["messages"] if m["role"] == "tool"]
+        assert len(user_msgs) == 1
+        assert user_msgs[0]["content"] == "Here are the results"
+        assert len(tool_msgs) == 2
+        assert tool_msgs[0]["content"] == "result line 1\nresult line 2"
+        assert tool_msgs[1]["content"] == "simple result"
+
     def test_convert_message_multiple_tool_results_no_other_content(self):
         """Multiple tool_results with no text blocks — only tool messages produced."""
         payload = {

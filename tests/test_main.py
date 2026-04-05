@@ -135,6 +135,79 @@ def test_pid_file_parent_created(default_config, monkeypatch, tmp_uam_dir):
     assert pid_file.exists()
 
 
+def test_on_shutdown_pid_not_exists(default_config, monkeypatch, tmp_uam_dir):
+    """on_shutdown when PID file does not exist should not raise."""
+    monkeypatch.setattr(sys, "argv", ["uam"])
+    pid_file = tmp_uam_dir / ".uam" / "uam.pid"
+    monkeypatch.setattr(main_mod, "PID_FILE", pid_file)
+
+    async def mock_start(self, skip_discovery=False):
+        self.session = MagicMock()
+
+    async def mock_stop(self):
+        pass
+
+    with patch("uam.__main__.get_config", return_value=default_config), \
+         patch("uam.__main__.ModelRouter.start", mock_start), \
+         patch("uam.__main__.ModelRouter.stop", mock_stop), \
+         patch("uam.__main__.web.run_app") as mock_run:
+        def fake_run_app(app, **kwargs):
+            import asyncio
+            loop = asyncio.new_event_loop()
+            # Run startup (creates PID file)
+            for cb in app.on_startup:
+                loop.run_until_complete(cb(app))
+            # Delete PID file before shutdown
+            if pid_file.exists():
+                pid_file.unlink()
+            # Run shutdown — PID file already gone
+            for cb in app.on_shutdown:
+                loop.run_until_complete(cb(app))
+            loop.close()
+
+        mock_run.side_effect = fake_run_app
+        main()
+
+    assert not pid_file.exists()
+
+
+def test_on_startup_prints_model_list(default_config, monkeypatch, tmp_uam_dir, capsys):
+    """on_startup prints each discovered model."""
+    monkeypatch.setattr(sys, "argv", ["uam"])
+
+    async def mock_start(self, skip_discovery=False):
+        self.session = MagicMock()
+        self.routes = {
+            "claude-sonnet-4-6": {
+                "backend": "anthropic",
+                "url": "https://api.anthropic.com",
+                "api_key": "sk-test",
+                "original_model": "claude-sonnet-4-6",
+            }
+        }
+
+    async def mock_stop(self):
+        pass
+
+    with patch("uam.__main__.get_config", return_value=default_config), \
+         patch("uam.__main__.ModelRouter.start", mock_start), \
+         patch("uam.__main__.ModelRouter.stop", mock_stop), \
+         patch("uam.__main__.web.run_app") as mock_run:
+        def fake_run_app(app, **kwargs):
+            import asyncio
+            loop = asyncio.new_event_loop()
+            for cb in app.on_startup:
+                loop.run_until_complete(cb(app))
+            loop.close()
+
+        mock_run.side_effect = fake_run_app
+        main()
+
+    captured = capsys.readouterr()
+    assert "claude-sonnet-4-6" in captured.out
+    assert "anthropic" in captured.out
+
+
 def test_listen_from_config(default_config, monkeypatch, tmp_uam_dir):
     """Custom listen address from config is passed to web.run_app."""
     monkeypatch.setattr(sys, "argv", ["uam"])

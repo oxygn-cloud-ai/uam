@@ -920,6 +920,233 @@ async def test_count_tokens_unknown(app_client):
 # ---------------------------------------------------------------------------
 
 
+async def test_messages_translation_stream_remaining_buffer(app_client):
+    """Streaming with data remaining in buffer after all newlines processed."""
+    save_state({
+        "default": "",
+        "aliases": {},
+        "models": {"openrouter:google/gemini-2.0-flash": {"enabled": True}},
+    })
+    # Send a chunk that doesn't end with \n — so the remaining buffer has data
+    sse_body = (
+        b'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}\n\n'
+        b'data: {"choices":[{"delta":{"content":" there"},"finish_reason":null}]}'
+    )
+    with _mock_upstream(app_client) as m:
+        m.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            body=sse_body,
+            status=200,
+            content_type="text/event-stream",
+        )
+        resp = await app_client.post(
+            "/v1/messages",
+            data=json.dumps({
+                "model": "openrouter:google/gemini-2.0-flash",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 100,
+                "stream": True,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status == 200
+    body = await resp.read()
+    text = body.decode()
+    assert "there" in text
+
+
+async def test_messages_translation_stream_remaining_buffer_unconvertible(app_client):
+    """Remaining buffer data that doesn't convert (not SSE data: prefix)."""
+    save_state({
+        "default": "",
+        "aliases": {},
+        "models": {"openrouter:google/gemini-2.0-flash": {"enabled": True}},
+    })
+    # The remaining buffer after processing has content that won't convert
+    # (a partial line that is not "data: ..." format)
+    sse_body = (
+        b'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}\n\n'
+        b"some-non-sse-trailing-data"
+    )
+    with _mock_upstream(app_client) as m:
+        m.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            body=sse_body,
+            status=200,
+            content_type="text/event-stream",
+        )
+        resp = await app_client.post(
+            "/v1/messages",
+            data=json.dumps({
+                "model": "openrouter:google/gemini-2.0-flash",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 100,
+                "stream": True,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status == 200
+    body = await resp.read()
+    text = body.decode()
+    # Should still have the initial content but not crash on non-convertible buffer
+    assert "hi" in text
+
+
+async def test_messages_translation_stream_empty_converted(app_client):
+    """Streaming line that converts to None is skipped."""
+    save_state({
+        "default": "",
+        "aliases": {},
+        "models": {"openrouter:google/gemini-2.0-flash": {"enabled": True}},
+    })
+    # Empty delta -> converted is None, then [DONE] ends the stream
+    sse_body = (
+        b'data: {"choices":[{"delta":{},"finish_reason":null}]}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    with _mock_upstream(app_client) as m:
+        m.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            body=sse_body,
+            status=200,
+            content_type="text/event-stream",
+        )
+        resp = await app_client.post(
+            "/v1/messages",
+            data=json.dumps({
+                "model": "openrouter:google/gemini-2.0-flash",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 100,
+                "stream": True,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status == 200
+    body = await resp.read()
+    text = body.decode()
+    assert "message_stop" in text
+
+
+def test_forward_response_headers_all_types():
+    """_forward_response_headers forwards x-*, anthropic-*, and request-id."""
+    from unittest.mock import MagicMock
+    from multidict import CIMultiDict
+
+    upstream = MagicMock()
+    upstream.headers = CIMultiDict({
+        "x-request-id": "abc123",
+        "anthropic-ratelimit-tokens": "5000",
+        "request-id": "req-456",
+        "content-type": "application/json",  # should NOT be forwarded
+    })
+    resp = web.StreamResponse()
+    _forward_response_headers(upstream, resp)
+    assert resp.headers.get("x-request-id") == "abc123"
+    assert resp.headers.get("anthropic-ratelimit-tokens") == "5000"
+    assert resp.headers.get("request-id") == "req-456"
+    assert "content-type" not in resp.headers
+
+
+async def test_ask_translation_upstream_error(app_client):
+    """Ask with translated backend returns upstream error directly."""
+    save_state({
+        "default": "",
+        "aliases": {},
+        "models": {"openrouter:google/gemini-2.0-flash": {"enabled": True}},
+    })
+    with _mock_upstream(app_client) as m:
+        m.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            body=b'{"error":{"message":"rate limited"}}',
+            status=429,
+            content_type="application/json",
+        )
+        resp = await app_client.post(
+            "/v1/messages/ask",
+            data=json.dumps({
+                "model": "openrouter:google/gemini-2.0-flash",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 100,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status == 429
+
+
+async def test_ask_translation_exception(app_client):
+    """Ask with translated backend raises exception -> 502."""
+    save_state({
+        "default": "",
+        "aliases": {},
+        "models": {"openrouter:google/gemini-2.0-flash": {"enabled": True}},
+    })
+    with _mock_upstream(app_client) as m:
+        m.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            exception=aiohttp.ClientError("connection failed"),
+        )
+        resp = await app_client.post(
+            "/v1/messages/ask",
+            data=json.dumps({
+                "model": "openrouter:google/gemini-2.0-flash",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 100,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status == 502
+
+
+async def test_count_tokens_anthropic_exception(app_client):
+    """count_tokens with anthropic backend raises exception -> 502."""
+    save_state({
+        "default": "claude-sonnet-4-6",
+        "aliases": {},
+        "models": {"claude-sonnet-4-6": {"enabled": True}},
+    })
+    with _mock_upstream(app_client) as m:
+        m.post(
+            "https://api.anthropic.com/v1/messages/count_tokens",
+            exception=aiohttp.ClientError("upstream fail"),
+        )
+        resp = await app_client.post(
+            "/v1/messages/count_tokens",
+            data=json.dumps({
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "hello"}],
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status == 502
+
+
+async def test_post_state_add_new_model(app_client):
+    """POST /state with a model not in state adds it."""
+    save_state({"default": "", "aliases": {}, "models": {}})
+    resp = await app_client.post(
+        "/state",
+        data=json.dumps({"models": {"new:model": {"enabled": True}}}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["state"]["models"]["new:model"]["enabled"] is True
+
+
+async def test_post_state_update_aliases(app_client):
+    """POST /state with aliases merges them."""
+    save_state({"default": "", "aliases": {"old": "old:model"}, "models": {}})
+    resp = await app_client.post(
+        "/state",
+        data=json.dumps({"aliases": {"new": "new:model"}}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["state"]["aliases"]["old"] == "old:model"
+    assert data["state"]["aliases"]["new"] == "new:model"
+
+
 def test_cache_within_ttl(monkeypatch):
     """Second call within TTL returns cached state, no disk reload."""
     import uam.proxy as proxy_mod

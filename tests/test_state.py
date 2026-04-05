@@ -192,3 +192,96 @@ def test_extract_specific_alias_sonnet():
 
 def test_extract_specific_alias_no_match():
     assert _extract_specific_alias("local:???") == ""
+
+
+def test_extract_specific_alias_family_version():
+    """Extracts family+version when no variant keyword found."""
+    assert _extract_specific_alias("local:llama3.1-chat") == "llama3.1"
+
+
+def test_extract_specific_alias_with_prefix():
+    """Strips backend and org prefix before matching."""
+    assert _extract_specific_alias("openrouter:google/gemini-2.0-flash") == "flash"
+
+
+# --- auto_aliases edge cases ---
+
+
+def test_auto_aliases_ambiguous_no_specific():
+    """Ambiguous aliases where _extract_specific_alias returns same as base alias."""
+    # Two models both map to 'gemma', specific alias for them should be different
+    result = auto_aliases(["local:gemma-2b", "local:gemma-7b"])
+    # Base alias "gemma" is ambiguous, should try specific
+    assert "gemma" not in result  # ambiguous
+    assert "gemma2" in result or "gemma7" in result
+
+
+def test_auto_aliases_ambiguous_specific_same_as_alias():
+    """When specific alias equals the base alias, it's skipped."""
+    # Models where specific gives the same result as base
+    result = auto_aliases(["local:12345-a", "local:12345-b"])
+    # Both map to "" as alias (numeric only), so neither gets an alias
+    assert result == {}
+
+
+# --- sync_state_with_routes edge cases ---
+
+
+def test_sync_state_sets_default_to_claude():
+    """sync_state prefers a Claude model as initial default."""
+    from uam.state import sync_state_with_routes
+    state = {"default": "", "aliases": {}, "models": {}}
+    result = sync_state_with_routes(
+        ["openrouter:google/gemini-2.0-flash", "claude-sonnet-4-6"],
+        state,
+    )
+    assert result["default"] == "claude-sonnet-4-6"
+
+
+def test_sync_state_sets_default_to_first_when_no_claude():
+    """sync_state falls back to first route key when no Claude model."""
+    from uam.state import sync_state_with_routes
+    state = {"default": "", "aliases": {}, "models": {}}
+    result = sync_state_with_routes(
+        ["openrouter:google/gemini-2.0-flash", "local:qwen"],
+        state,
+    )
+    assert result["default"] == "openrouter:google/gemini-2.0-flash"
+
+
+def test_sync_state_keeps_existing_default():
+    """sync_state keeps existing default if already set."""
+    from uam.state import sync_state_with_routes
+    state = {"default": "existing-model", "aliases": {}, "models": {}}
+    result = sync_state_with_routes(["claude-sonnet-4-6"], state)
+    assert result["default"] == "existing-model"
+
+
+def test_sync_state_empty_routes():
+    """sync_state with empty route keys does not set a default."""
+    from uam.state import sync_state_with_routes
+    state = {"default": "", "aliases": {}, "models": {}}
+    result = sync_state_with_routes([], state)
+    assert result["default"] == ""
+
+
+def test_sync_state_preserves_user_aliases():
+    """sync_state preserves user-set aliases for known models."""
+    from uam.state import sync_state_with_routes
+    state = {
+        "default": "claude-sonnet-4-6",
+        "aliases": {"my-alias": "claude-sonnet-4-6"},
+        "models": {"claude-sonnet-4-6": {"enabled": True}},
+    }
+    result = sync_state_with_routes(["claude-sonnet-4-6"], state)
+    # User alias preserved, auto alias also generated
+    assert result["aliases"]["my-alias"] == "claude-sonnet-4-6"
+
+
+def test_sync_state_loads_from_disk_when_none():
+    """sync_state loads state from disk when state is None."""
+    from uam.state import sync_state_with_routes
+    save_state({"default": "", "aliases": {}, "models": {}})
+    result = sync_state_with_routes(["claude-sonnet-4-6"], None)
+    assert "claude-sonnet-4-6" in result["models"]
+    assert result["models"]["claude-sonnet-4-6"]["enabled"] is True

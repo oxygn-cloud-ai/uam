@@ -164,6 +164,54 @@ class TestDiscoverLocal:
             routes = await discover_local(config, session)
         assert routes == {}
 
+    async def test_discover_local_server_empty_url_skipped(self):
+        """Server dict with empty url is skipped."""
+        config = {"local": {"probe_ports": [], "servers": [{"url": ""}]}}
+        async with aiohttp.ClientSession() as session:
+            routes = await discover_local(config, session)
+        assert routes == {}
+
+    async def test_discover_local_empty_models_in_v1(self, local_config):
+        """v1/models returns empty data list."""
+        with aioresponses() as mocked:
+            mocked.get(
+                "http://127.0.0.1:11434/v1/models",
+                payload={"data": []},
+            )
+            async with aiohttp.ClientSession() as session:
+                routes = await discover_local(local_config, session)
+        assert routes == {}
+
+    async def test_discover_local_empty_models_in_api_tags(self, local_config):
+        """api/tags returns empty models list."""
+        with aioresponses() as mocked:
+            mocked.get(
+                "http://127.0.0.1:11434/v1/models",
+                exception=aiohttp.ClientConnectionError("refused"),
+            )
+            mocked.get(
+                "http://127.0.0.1:11434/api/tags",
+                payload={"models": []},
+            )
+            async with aiohttp.ClientSession() as session:
+                routes = await discover_local(local_config, session)
+        assert routes == {}
+
+    async def test_discover_local_api_tags_model_empty_name(self, local_config):
+        """api/tags model with empty name and model key is skipped."""
+        with aioresponses() as mocked:
+            mocked.get(
+                "http://127.0.0.1:11434/v1/models",
+                exception=aiohttp.ClientConnectionError("refused"),
+            )
+            mocked.get(
+                "http://127.0.0.1:11434/api/tags",
+                payload={"models": [{"name": "", "model": ""}]},
+            )
+            async with aiohttp.ClientSession() as session:
+                routes = await discover_local(local_config, session)
+        assert routes == {}
+
     async def test_discover_local_route_has_no_api_key(self, local_config):
         with aioresponses() as mocked:
             mocked.get(

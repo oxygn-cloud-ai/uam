@@ -228,6 +228,35 @@ class TestDiscoverRunPod:
             # This is a known false positive -- the port 18000 matches the substring check
             assert len(routes) == 1  # Documents current (buggy) behavior
 
+    async def test_discover_runpod_env_item_without_equals(self, runpod_config):
+        """Env items without '=' are ignored in parsing."""
+        pod = _make_pod(env=["NO_EQUALS_HERE", "VLLM_API_KEY=my-key"])
+        with aioresponses() as mocked:
+            _mock_graphql_and_probe(mocked, [pod], probe_models=["model-eq"])
+            async with aiohttp.ClientSession() as session:
+                routes = await discover_runpod(runpod_config, session)
+        route = routes["runpod:testpod/model-eq"]
+        assert route["api_key"] == "my-key"
+
+    async def test_discover_runpod_no_vllm_key(self, runpod_config):
+        """Pod with no VLLM_API_KEY in env -> empty api_key, no auth header."""
+        pod = _make_pod(env=["OTHER=val"])
+        with aioresponses() as mocked:
+            _mock_graphql_and_probe(mocked, [pod], probe_models=["model-nk"])
+            async with aiohttp.ClientSession() as session:
+                routes = await discover_runpod(runpod_config, session)
+        route = routes["runpod:testpod/model-nk"]
+        assert route["api_key"] == ""
+
+    async def test_discover_runpod_null_ports(self, runpod_config):
+        """Pod with null ports field is skipped (no port 8000)."""
+        pod = _make_pod(ports=None)
+        with aioresponses() as mocked:
+            mocked.post(RUNPOD_GRAPHQL, payload=_graphql_response([pod]))
+            async with aiohttp.ClientSession() as session:
+                routes = await discover_runpod(runpod_config, session)
+        assert routes == {}
+
     async def test_discover_runpod_empty_model_list(self, runpod_config):
         pod = _make_pod()
         with aioresponses() as mocked:

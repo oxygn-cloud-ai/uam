@@ -157,6 +157,75 @@ async def test_router_discover_handles_exceptions(default_config):
     assert "local:good" in router.routes
 
 
+async def test_router_discover_no_local_config(default_config):
+    """discover() skips local when config has no 'local' section."""
+    default_config["runpod"] = {"accounts": {"a": {}}}
+    default_config["openrouter"] = {"url": "http://or"}
+    default_config.pop("local", None)
+
+    mock_rp = AsyncMock(return_value={})
+    mock_or = AsyncMock(return_value={})
+    mock_lc = AsyncMock(return_value={})
+
+    router = ModelRouter(default_config)
+    router.session = AsyncMock()
+
+    with patch("uam.router.discover_runpod", mock_rp), \
+         patch("uam.router.discover_openrouter", mock_or), \
+         patch("uam.router.discover_local", mock_lc):
+        await router.discover()
+
+    mock_rp.assert_awaited_once()
+    mock_or.assert_awaited_once()
+    mock_lc.assert_not_awaited()
+
+
+async def test_router_discover_no_openrouter_config(default_config):
+    """discover() skips openrouter when config has no 'openrouter' section."""
+    default_config["runpod"] = {"accounts": {"a": {}}}
+    default_config["local"] = {"probe_ports": [11434]}
+    default_config.pop("openrouter", None)
+
+    mock_rp = AsyncMock(return_value={})
+    mock_or = AsyncMock(return_value={})
+    mock_lc = AsyncMock(return_value={})
+
+    router = ModelRouter(default_config)
+    router.session = AsyncMock()
+
+    with patch("uam.router.discover_runpod", mock_rp), \
+         patch("uam.router.discover_openrouter", mock_or), \
+         patch("uam.router.discover_local", mock_lc):
+        await router.discover()
+
+    mock_rp.assert_awaited_once()
+    mock_or.assert_not_awaited()
+    mock_lc.assert_awaited_once()
+
+
+async def test_router_discover_no_backends_configured(default_config):
+    """discover() with no backends configured runs nothing."""
+    default_config.pop("runpod", None)
+    default_config.pop("openrouter", None)
+    default_config.pop("local", None)
+
+    mock_rp = AsyncMock(return_value={})
+    mock_or = AsyncMock(return_value={})
+    mock_lc = AsyncMock(return_value={})
+
+    router = ModelRouter(default_config)
+    router.session = AsyncMock()
+
+    with patch("uam.router.discover_runpod", mock_rp), \
+         patch("uam.router.discover_openrouter", mock_or), \
+         patch("uam.router.discover_local", mock_lc):
+        await router.discover()
+
+    mock_rp.assert_not_awaited()
+    mock_or.assert_not_awaited()
+    mock_lc.assert_not_awaited()
+
+
 async def test_router_discover_skips_unconfigured_runpod(default_config):
     # Empty accounts means runpod should be skipped
     default_config["runpod"] = {"accounts": {}}
