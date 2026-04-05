@@ -1177,3 +1177,40 @@ def test_cache_invalidation(monkeypatch):
 
     state = proxy_mod._get_state()
     assert state["default"] == "second"
+
+
+# --- Malformed JSON body tests ---
+
+
+async def test_messages_malformed_json(app_client):
+    resp = await app_client.post(
+        "/v1/messages",
+        data=b"not json at all",
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status == 400
+    data = await resp.json()
+    assert data["error"]["type"] == "invalid_request_error"
+    assert "Invalid JSON" in data["error"]["message"]
+
+
+async def test_ask_malformed_json(app_client):
+    resp = await app_client.post(
+        "/v1/messages/ask",
+        data=b"{broken",
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status == 400
+    data = await resp.json()
+    assert data["error"]["type"] == "invalid_request_error"
+
+
+async def test_count_tokens_malformed_json(app_client):
+    resp = await app_client.post(
+        "/v1/messages/count_tokens",
+        data=b"",
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status == 400
+    data = await resp.json()
+    assert data["error"]["type"] == "invalid_request_error"

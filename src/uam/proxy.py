@@ -124,7 +124,13 @@ async def handle_messages(request: web.Request) -> web.StreamResponse:
     """Main messages endpoint with default model swap and format translation."""
     router: ModelRouter = request.app["router"]
     body = await request.read()
-    payload = json.loads(body)
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response(
+            {"error": {"type": "invalid_request_error", "message": "Invalid JSON body"}},
+            status=400,
+        )
     model = payload.get("model", "")
 
     route, effective_model = _resolve_default_swap(router, model)
@@ -308,7 +314,13 @@ async def handle_ask(request: web.Request) -> web.StreamResponse:
     """One-shot query to a specific model. Used by the UserPromptSubmit hook."""
     router: ModelRouter = request.app["router"]
     body = await request.read()
-    payload = json.loads(body)
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response(
+            {"error": {"type": "invalid_request_error", "message": "Invalid JSON body"}},
+            status=400,
+        )
     model = payload.get("model", "")
 
     state = _get_state()
@@ -384,7 +396,13 @@ async def handle_ask(request: web.Request) -> web.StreamResponse:
 async def handle_count_tokens(request: web.Request) -> web.Response:
     router: ModelRouter = request.app["router"]
     body = await request.read()
-    payload = json.loads(body)
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response(
+            {"error": {"type": "invalid_request_error", "message": "Invalid JSON body"}},
+            status=400,
+        )
     model = payload.get("model", "")
 
     route, effective_model = _resolve_default_swap(router, model)

@@ -1,5 +1,7 @@
 """RunPod discovery — finds running vLLM pods via GraphQL API."""
 
+import re
+
 import aiohttp
 
 from uam.config import resolve_key
@@ -38,7 +40,8 @@ async def discover_runpod(config: dict, session: aiohttp.ClientSession) -> dict[
                 ports = pod.get("ports") or ""
                 if isinstance(ports, list):
                     ports = " ".join(ports)
-                if "8000" not in ports:
+                port_tokens = re.split(r'[\s,/]+', ports)
+                if "8000" not in port_tokens:
                     continue
 
                 pod_id = pod["id"]

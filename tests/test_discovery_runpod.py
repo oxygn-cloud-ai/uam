@@ -217,16 +217,13 @@ class TestDiscoverRunPod:
             assert "runpod:my-cool-pod/model-s" in routes
 
     async def test_discover_runpod_port_substring_false_positive(self, runpod_config):
-        """Port '18000' contains '8000' as substring -- the current implementation
-        treats this as a match. This test documents that behavior (potential bug)."""
+        """Port '18000' should NOT match '8000' — exact token matching required."""
         pod = _make_pod(ports="18000/tcp,22/tcp")
         with aioresponses() as mocked:
             _mock_graphql_and_probe(mocked, [pod], probe_models=["model-fp"])
             async with aiohttp.ClientSession() as session:
                 routes = await discover_runpod(runpod_config, session)
-            # Current implementation: "8000" in "18000/tcp 22/tcp" is True
-            # This is a known false positive -- the port 18000 matches the substring check
-            assert len(routes) == 1  # Documents current (buggy) behavior
+            assert len(routes) == 0  # Fixed: no false positive
 
     async def test_discover_runpod_env_item_without_equals(self, runpod_config):
         """Env items without '=' are ignored in parsing."""
