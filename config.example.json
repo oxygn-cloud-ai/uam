@@ -14,7 +14,8 @@
     "api_key_env": "OPENROUTER_API_KEY"
   },
   "local": {
-    "probe_ports": [11434, 8000, 8080]
+    "probe_ports": [11434, 8000, 8080, 2242, 5000, 3000],
+    "servers": []
   },
   "default_backend": "anthropic"
 }

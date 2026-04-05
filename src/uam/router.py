@@ -1,7 +1,6 @@
 """Model router — discovery orchestration and model resolution."""
 
 import asyncio
-import os
 
 import aiohttp
 
@@ -11,6 +10,7 @@ from uam.discovery.anthropic import discover_anthropic
 from uam.discovery.local import discover_local
 from uam.discovery.openrouter import discover_openrouter
 from uam.discovery.runpod import discover_runpod
+from uam.state import load_state, save_state, sync_state_with_routes
 
 
 class ModelRouter:
@@ -28,6 +28,9 @@ class ModelRouter:
 
         if not skip_discovery:
             await self.discover()
+
+        # Sync state with discovered routes
+        self._sync_state()
 
     async def stop(self):
         if self.session:
@@ -52,8 +55,16 @@ class ModelRouter:
 
     async def refresh(self):
         """Clear non-Anthropic routes and re-discover."""
-        self.routes = {k: v for k, v in self.routes.items() if v["backend"] == "anthropic"}
+        self.routes = {k: v for k, v in self.routes.items()
+                       if v["backend"] == "anthropic"}
         await self.discover()
+        self._sync_state()
+
+    def _sync_state(self):
+        """Sync models.json with current discovered routes."""
+        state = load_state()
+        state = sync_state_with_routes(list(self.routes.keys()), state)
+        save_state(state)
 
     def resolve(self, model: str) -> dict | None:
         """Resolve a model ID to a backend route."""
