@@ -4,6 +4,8 @@ import logging
 
 import aiohttp
 
+from uam.config import get_backend_timeout
+
 logger = logging.getLogger("uam.discovery.local")
 
 
@@ -11,6 +13,7 @@ async def discover_local(config: dict, session: aiohttp.ClientSession) -> dict[s
     """Discover models from local servers. Returns model_id -> route dict."""
     local_config = config.get("local", {})
     routes = {}
+    timeout = get_backend_timeout(config, "local")
 
     # Build list of (base_url, api_format) to probe
     urls_to_probe: list[tuple[str, str]] = []
@@ -32,7 +35,7 @@ async def discover_local(config: dict, session: aiohttp.ClientSession) -> dict[s
 
     for url, api_format in urls_to_probe:
         label = url.replace("http://", "").replace("https://", "")
-        await _probe_server(url, label, routes, session, api_format)
+        await _probe_server(url, label, routes, session, api_format, timeout)
 
     return routes
 
@@ -43,6 +46,7 @@ async def _probe_server(
     routes: dict,
     session: aiohttp.ClientSession,
     api_format: str = "openai",
+    timeout: int = 120,
 ) -> None:
     """Probe a single server URL for models."""
     for path in ["/v1/models", "/api/tags"]:
@@ -64,6 +68,7 @@ async def _probe_server(
                             "api_key": "",
                             "original_model": model_id,
                             "api_format": api_format,
+                            "timeout": timeout,
                         }
                         logger.info(f"[local:{label}] {route_key}")
             else:
@@ -76,8 +81,9 @@ async def _probe_server(
                         "api_key": "",
                         "original_model": model_id,
                         "api_format": api_format,
+                        "timeout": timeout,
                     }
-                    print(f"  [local:{label}] {route_key}")
+                    logger.info(f"[local:{label}] {route_key}")
             break  # Found models on this server
         except Exception:
             continue

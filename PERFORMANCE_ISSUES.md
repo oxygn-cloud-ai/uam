@@ -19,8 +19,18 @@ log levels.
 
 ## HIGH
 
-### H1. Unbounded SSE buffer growth + O(n^2) newline scan
+### H1. Unbounded SSE buffer growth + O(n^2) newline scan [FIXED]
 **File:** `src/uam/proxy.py` lines 274-293 (`_proxy_with_translation` streaming loop)
+
+**Fix:**
+- Cap buffer at `MAX_BUFFER_SIZE = 1 MiB`. If exceeded, log error and
+  break out of the streaming loop cleanly.
+- Replaced `b"\n" in buffer` + `buffer.split(b"\n", 1)` with
+  `buffer.find(b"\n")` + slice (O(n) per iteration instead of O(n^2)).
+
+Verified by `TestStreamBufferSizeLimit::test_stream_buffer_size_limit`
+which feeds a 2 MiB no-newline body and confirms the response closes
+cleanly without OOM.
 
 ```python
 buffer = b""
@@ -143,16 +153,24 @@ each non-stream response pays one parse + one serialize. If max_tokens are
 large, this is the dominant CPU cost on the response path. No fix
 recommended.
 
-### L3. `dict(upstream.headers)` allocation per error
+### L3. `dict(upstream.headers)` allocation per error [FIXED]
 **File:** `src/uam/proxy.py` lines 180, 249, 408, 433, 484
+
+**Fix:** All five call sites now pass `upstream.headers` (CIMultiDict)
+directly to `_retry_headers()` instead of materializing to a `dict`.
+Folded into the C1 fix.
 
 `_retry_headers(upstream.status, dict(upstream.headers))` materializes the
 multidict to a dict only to do two `.get()` lookups. Negligible, but you can
 pass `upstream.headers` directly — `CIMultiDict.get()` already exists.
 
-### L4. `print()` from async handlers / discovery
+### L4. `print()` from async handlers / discovery [PARTIAL]
 **File:** `src/uam/proxy.py` lines 520, 524; `src/uam/discovery/local.py`
 line 80.
+
+**Fix:** `discovery/local.py:80` `print()` replaced with `logger.info()`.
+The `proxy.py` `handle_refresh` `print()` calls remain — they are
+intentional console feedback for the user-initiated `/refresh` action.
 
 These do sync stdout writes on the event loop. Volume is low (refresh +
 discovery only). Replace with `logger.info` for consistency.

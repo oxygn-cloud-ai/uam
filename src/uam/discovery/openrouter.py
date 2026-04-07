@@ -4,7 +4,7 @@ import logging
 
 import aiohttp
 
-from uam.config import resolve_key
+from uam.config import get_backend_timeout, resolve_key
 
 logger = logging.getLogger("uam.discovery.openrouter")
 
@@ -18,6 +18,7 @@ async def discover_openrouter(config: dict, session: aiohttp.ClientSession) -> d
         return {}
 
     url = or_config.get("url", "https://openrouter.ai/api")
+    timeout = get_backend_timeout(config, "openrouter")
     routes = {}
 
     try:
@@ -37,6 +38,7 @@ async def discover_openrouter(config: dict, session: aiohttp.ClientSession) -> d
                 "api_key": api_key,
                 "original_model": model_id,
                 "api_format": "openai",
+                "timeout": timeout,
             }
         logger.info(f"[openrouter] discovered {len(routes)} models")
     except Exception as e:

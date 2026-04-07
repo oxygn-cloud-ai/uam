@@ -4,10 +4,12 @@ import json
 import logging
 import time
 
+import aiohttp
 from aiohttp import web
 
 logger = logging.getLogger("uam.proxy")
 
+from uam.log import redact_headers
 from uam.router import ModelRouter
 from uam.state import load_state, save_state, is_enabled, get_default, write_env_file
 from uam.translate import (
@@ -37,6 +39,19 @@ def _invalidate_state_cache() -> None:
     """Force reload state from disk on next access."""
     global _state_cache_time
     _state_cache_time = 0
+
+
+def _route_timeout(route: dict) -> aiohttp.ClientTimeout | None:
+    """Return per-route ClientTimeout, or None to fall through to session default.
+
+    H1 fix: per-backend timeouts from config are now actually applied to each
+    upstream request rather than being silently ignored in favor of the
+    600s session default.
+    """
+    t = route.get("timeout")
+    if t is None:
+        return None
+    return aiohttp.ClientTimeout(total=int(t))
 
 
 def _openai_chat_url(route: dict) -> str:
@@ -88,6 +103,10 @@ def _build_upstream_headers(request: web.Request | None, route: dict) -> dict:
         headers["X-Api-Key"] = route["api_key"]
     elif route["api_key"]:
         headers["Authorization"] = f"Bearer {route['api_key']}"
+
+    # SEC-004: Always log via redact_headers so any future "log the request"
+    # change cannot accidentally leak Authorization / X-Api-Key.
+    logger.debug("Upstream headers: %s", redact_headers(headers))
 
     return headers
 
@@ -175,9 +194,10 @@ async def _proxy_anthropic_native(
 
     try:
         async with router.session.post(
-            target_url, data=json.dumps(payload), headers=headers
+            target_url, data=json.dumps(payload), headers=headers,
+            timeout=_route_timeout(route),
         ) as upstream:
-            retry_hdrs = _retry_headers(upstream.status, dict(upstream.headers)) if upstream.status >= 400 else {}
+            retry_hdrs = _retry_headers(upstream.status, upstream.headers) if upstream.status >= 400 else {}
             if is_stream:
                 resp_headers = {
                     "Content-Type": upstream.headers.get(
@@ -244,9 +264,10 @@ async def _proxy_with_translation(
 
     try:
         async with router.session.post(
-            target_url, data=json.dumps(openai_payload), headers=headers
+            target_url, data=json.dumps(openai_payload), headers=headers,
+            timeout=_route_timeout(route),
         ) as upstream:
-            retry_hdrs = _retry_headers(upstream.status, dict(upstream.headers)) if upstream.status >= 400 else {}
+            retry_hdrs = _retry_headers(upstream.status, upstream.headers) if upstream.status >= 400 else {}
             if is_stream:
                 resp_headers = {
                     "Content-Type": "text/event-stream",
@@ -271,11 +292,31 @@ async def _proxy_with_translation(
 
                 # Line-buffered reading: upstream.content yields raw
                 # byte chunks, not SSE lines. Buffer and split on \n.
+                #
+                # perf H1 fix:
+                #   - Cap buffer size at 1 MiB so a pathological upstream
+                #     sending no newlines cannot OOM the proxy.
+                #   - Use buffer.find() with linear scan instead of
+                #     `b"\n" in buffer` + split, which was O(n^2) on chunky
+                #     streams.
+                MAX_BUFFER_SIZE = 1024 * 1024  # 1 MiB max line
                 buffer = b""
+                buffer_oversize = False
                 async for chunk in upstream.content.iter_any():
                     buffer += chunk
-                    while b"\n" in buffer:
-                        line, buffer = buffer.split(b"\n", 1)
+                    if len(buffer) > MAX_BUFFER_SIZE:
+                        logger.error(
+                            "SSE buffer exceeded %d bytes — closing stream",
+                            MAX_BUFFER_SIZE,
+                        )
+                        buffer_oversize = True
+                        break
+                    while True:
+                        idx = buffer.find(b"\n")
+                        if idx == -1:
+                            break
+                        line = buffer[:idx]
+                        buffer = buffer[idx + 1:]
                         if not line.strip():
                             continue
                         converted = openai_stream_to_anthropic_stream(
@@ -284,8 +325,8 @@ async def _proxy_with_translation(
                         if converted:
                             await resp.write(converted)
 
-                # Process any remaining data in buffer
-                if buffer.strip():
+                # Process any remaining data in buffer (only if we didn't abort)
+                if not buffer_oversize and buffer.strip():
                     converted = openai_stream_to_anthropic_stream(
                         buffer, effective_model
                     )
@@ -305,7 +346,13 @@ async def _proxy_with_translation(
                     )
 
                 data = await upstream.json()
-                anthropic_resp = openai_to_anthropic(data, effective_model)
+                # H2 fix: enable <think> tag extraction for non-streaming
+                # responses. Safe — only strips complete balanced tags from
+                # the start of text content. Local R1 / DeepSeek style models
+                # benefit; other models are unaffected.
+                anthropic_resp = openai_to_anthropic(
+                    data, effective_model, extract_think_tags=True
+                )
                 return web.json_response(anthropic_resp)
     except Exception as e:
         return web.json_response(
@@ -328,20 +375,32 @@ def _make_anthropic_error(error_body: bytes, status: int) -> bytes:
     }).encode()
 
 
-def _retry_headers(status: int, upstream_headers: dict | None = None) -> dict:
+def _retry_headers(status: int, upstream_headers=None) -> dict:
     """Build retry-signal headers based on upstream HTTP status.
 
     Claude Code already retries 10 times on its own. We don't retry inside the
     proxy — instead we propagate x-should-retry and retry-after* so the caller
     can make informed decisions.
+
+    upstream_headers may be a CIMultiDict (from aiohttp upstream.headers) or a
+    plain dict. C1 fix: do a case-insensitive lookup so canonical-case
+    'Retry-After' (the form most servers actually emit) is not silently dropped.
     """
     if status in (503, 429):
         headers: dict[str, str] = {"x-should-retry": "true"}
         if upstream_headers:
-            for h in ("retry-after", "retry-after-ms"):
-                val = upstream_headers.get(h)
-                if val:
-                    headers[h] = val
+            # Normalize all keys to lowercase for a case-insensitive lookup.
+            # Works for both CIMultiDict (already CI) and plain dict.
+            try:
+                lowered = {str(k).lower(): v for k, v in upstream_headers.items()}
+            except AttributeError:
+                lowered = {}
+            ra = lowered.get("retry-after")
+            ram = lowered.get("retry-after-ms")
+            if ra:
+                headers["retry-after"] = ra
+            if ram:
+                headers["retry-after-ms"] = ram
         return headers
     if status in (400, 401, 403, 404):
         return {"x-should-retry": "false"}
@@ -401,11 +460,12 @@ async def handle_ask(request: web.Request) -> web.StreamResponse:
 
         try:
             async with router.session.post(
-                target_url, data=json.dumps(openai_payload), headers=headers
+                target_url, data=json.dumps(openai_payload), headers=headers,
+                timeout=_route_timeout(route),
             ) as upstream:
                 if upstream.status >= 400:
                     error_body = await upstream.read()
-                    retry_hdrs = _retry_headers(upstream.status, dict(upstream.headers))
+                    retry_hdrs = _retry_headers(upstream.status, upstream.headers)
                     return web.Response(
                         body=error_body, status=upstream.status,
                         content_type="application/json",
@@ -428,9 +488,10 @@ async def handle_ask(request: web.Request) -> web.StreamResponse:
 
         try:
             async with router.session.post(
-                target_url, data=json.dumps(payload), headers=headers
+                target_url, data=json.dumps(payload), headers=headers,
+                timeout=_route_timeout(route),
             ) as upstream:
-                retry_hdrs = _retry_headers(upstream.status, dict(upstream.headers)) if upstream.status >= 400 else {}
+                retry_hdrs = _retry_headers(upstream.status, upstream.headers) if upstream.status >= 400 else {}
                 data = await upstream.read()
                 return web.Response(
                     body=data, status=upstream.status,
@@ -479,9 +540,10 @@ async def handle_count_tokens(request: web.Request) -> web.Response:
 
     try:
         async with router.session.post(
-            target_url, data=json.dumps(payload), headers=headers
+            target_url, data=json.dumps(payload), headers=headers,
+            timeout=_route_timeout(route),
         ) as upstream:
-            retry_hdrs = _retry_headers(upstream.status, dict(upstream.headers)) if upstream.status >= 400 else {}
+            retry_hdrs = _retry_headers(upstream.status, upstream.headers) if upstream.status >= 400 else {}
             data = await upstream.read()
             return web.Response(
                 body=data, status=upstream.status, content_type="application/json",

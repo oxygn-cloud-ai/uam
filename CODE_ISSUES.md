@@ -6,9 +6,16 @@ Scope: commits cdc7be7, 6354f2c, a857494, 1bcf736, f48c210, b430300, c7fc95f.
 
 ## CRITICAL
 
-### C1. `_retry_headers` silently drops `Retry-After` due to case-sensitive lookup
+### C1. `_retry_headers` silently drops `Retry-After` due to case-sensitive lookup [FIXED]
 **File:** `src/uam/proxy.py:331-348` (and all callers passing `dict(upstream.headers)`)
 **Severity:** CRITICAL
+
+**Fix:** `_retry_headers()` now normalizes all header keys to lowercase
+before lookup, so `Retry-After`, `RETRY-AFTER`, and `retry-after` all
+work. Call sites updated to pass `upstream.headers` (CIMultiDict)
+directly instead of `dict(upstream.headers)`. Regression test:
+`TestRetryHeadersCanonicalCase` covers canonical case, uppercase,
+lowercase, and CIMultiDict inputs.
 
 `_retry_headers` is called like this from every error path:
 
@@ -44,9 +51,22 @@ and inside `_retry_headers` rely on CIMultiDict semantics. Add a regression test
 
 ## HIGH
 
-### H1. `get_backend_timeout` is dead code — per-backend timeouts not actually applied
+### H1. `get_backend_timeout` is dead code — per-backend timeouts not actually applied [FIXED]
 **File:** `src/uam/config.py:48-53`, `src/uam/router.py:28`
 **Severity:** HIGH
+
+**Fix:**
+- All four discovery modules (`anthropic`, `local`, `openrouter`, `runpod`)
+  now call `get_backend_timeout(config, backend)` and store the value as
+  `route["timeout"]`.
+- `router.resolve()` fallback synthesizes a timeout via the same call.
+- `proxy.py` adds a `_route_timeout(route)` helper and passes
+  `timeout=_route_timeout(route)` to every `session.post(...)` call (5
+  call sites: native messages, translated messages, ask translated, ask
+  native, count_tokens).
+- Session-level `total=600` remains as a safety net.
+
+Verified by `TestRouteTimeouts` (local=120, anthropic=600, openrouter=300).
 
 Phase 1's commit message and CLAUDE.md announce "per-backend timeouts." `get_backend_timeout()` is implemented and tested in `tests/test_logging.py::TestBackendTimeouts`, and `default_config()` now includes a `timeout` field per backend. **None of this is wired into anything.**
 
@@ -65,9 +85,17 @@ That session is reused for every upstream POST in `proxy.py`. There is no per-re
 
 ---
 
-### H2. `extract_think_tags` parameter is dead — never invoked from production code
+### H2. `extract_think_tags` parameter is dead — never invoked from production code [FIXED]
 **File:** `src/uam/translate.py:181-223`
 **Severity:** HIGH (per the user's explicit prompt)
+
+**Fix:** `_proxy_with_translation()` now calls
+`openai_to_anthropic(data, effective_model, extract_think_tags=True)`
+on the non-streaming response path. Safe — only strips complete balanced
+tags from the start of text. Verified by
+`TestProxyExtractsThinkTags::test_proxy_extracts_think_tags_nonstreaming`
+which posts a `<think>step 1</think>final answer` upstream response and
+asserts the proxy returns a thinking block + a text block.
 
 `openai_to_anthropic` accepts `extract_think_tags: bool = False`, but no caller ever passes `True`:
 
@@ -140,9 +168,13 @@ So a message containing `[{type:text,text:"see result"}, {type:tool_result,...}]
 
 ## MEDIUM
 
-### M1. Leftover `print()` in `discover_local` after logging migration
+### M1. Leftover `print()` in `discover_local` after logging migration [FIXED]
 **File:** `src/uam/discovery/local.py:80`
 **Severity:** MEDIUM
+
+**Fix:** Replaced `print(f"  [local:{label}] {route_key}")` with
+`logger.info(f"[local:{label}] {route_key}")` to match the `/api/tags`
+branch. Verified by `TestLocalDiscoveryNoPrint` (capsys + caplog).
 
 Phase 1 migrated all discovery `print()` calls to `logger.info(...)`, except this one in the OpenAI-format branch:
 ```python

@@ -9,7 +9,13 @@ Status legend: OPEN / FIXED / WONTFIX / INFO
 
 ## CRITICAL
 
-### SEC-001 — Shell injection via `/state` POST → `~/.uam/env.sh` [OPEN]
+### SEC-001 — Shell injection via `/state` POST → `~/.uam/env.sh` [FIXED]
+
+**Fix:** `write_env_file()` now uses `shlex.quote()` on every interpolated
+value (default, friendly_name, capability list). Verified by
+`tests/test_security_and_correctness_fixes.py::TestWriteEnvFileShellInjectionSafe`
+which sources the generated file in a clean shell with malicious payloads
+and confirms no command execution.
 
 **File:** `src/uam/state.py:226-230`, `src/uam/proxy.py:544-582`
 
@@ -114,7 +120,14 @@ Anthropic model IDs.
 
 ---
 
-### SEC-004 — `redact_headers` is defined but never called [OPEN]
+### SEC-004 — `redact_headers` is defined but never called [FIXED]
+
+**Fix:** `_build_upstream_headers()` now calls
+`logger.debug("Upstream headers: %s", redact_headers(headers))` on every
+request. This both validates the function and ensures any future "log the
+request" change cannot accidentally leak `Authorization`/`X-Api-Key`.
+Verified by `TestBuildHeadersLogsRedacted` (asserts the real key never
+appears in any captured log record).
 
 **File:** `src/uam/log.py:43-52`
 
@@ -133,7 +146,13 @@ key material.
 
 ---
 
-### SEC-005 — Non-atomic `save_state` write — corruption window [OPEN]
+### SEC-005 — Non-atomic `save_state` write — corruption window [FIXED]
+
+**Fix:** `save_state()` now writes to a `tempfile.mkstemp(dir=...)` tmp
+file and `os.replace()`s it atomically. On failure the tmp file is
+unlinked. The original `models.json` is never truncated. Verified by
+`TestSaveStateAtomic` (simulates mid-write failure and confirms original
+file is preserved + no leftover .tmp files).
 
 **File:** `src/uam/state.py:21-24`, `src/uam/proxy.py:561-582`
 
@@ -286,7 +305,12 @@ except block. Consider keeping a `models.json.bak` rotation.
 
 ---
 
-### SEC-013 — `print()` to stdout in proxy handlers (not redacted, not log-rotated) [OPEN]
+### SEC-013 — `print()` to stdout in proxy handlers (not redacted, not log-rotated) [PARTIAL]
+
+**Fix:** `discovery/local.py:80` `print()` replaced with `logger.info()`.
+Verified by `TestLocalDiscoveryNoPrint`. The remaining `print()` calls in
+`proxy.py:520, 524` (handle_refresh status output) are intentional
+console feedback for the user-initiated `/refresh` command and remain.
 
 **File:** `src/uam/proxy.py:520, 524`, `src/uam/discovery/local.py:80`
 

@@ -7,7 +7,7 @@ import aiohttp
 
 logger = logging.getLogger("uam.router")
 
-from uam.config import resolve_key
+from uam.config import get_backend_timeout, resolve_key
 from uam.discovery.anthropic import ALIASES as ANTHROPIC_ALIASES
 from uam.discovery.anthropic import discover_anthropic
 from uam.discovery.local import discover_local
@@ -93,6 +93,8 @@ class ModelRouter:
                 "url": anthropic_cfg.get("url", "https://api.anthropic.com"),
                 "api_key": api_key,
                 "original_model": model,
+                "api_format": "anthropic",
+                "timeout": get_backend_timeout(self.config, "anthropic"),
             }
         return None
 

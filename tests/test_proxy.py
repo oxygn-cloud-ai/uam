@@ -399,8 +399,9 @@ async def test_post_state_writes_env_file(app_client):
     assert state_mod.ENV_PATH.exists()
     content = state_mod.ENV_PATH.read_text()
     assert "ANTHROPIC_BASE_URL=http://127.0.0.1:5100" in content
-    assert 'ANTHROPIC_DEFAULT_SONNET_MODEL="local:qwen3-coder-next:latest"' in content
-    assert 'ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="qwen"' in content
+    # SEC-001: shlex-quoted; safe chars produce bare unquoted form.
+    assert "ANTHROPIC_DEFAULT_SONNET_MODEL=local:qwen3-coder-next:latest" in content
+    assert "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME=qwen" in content
 
 
 async def test_post_state_update_models(app_client):

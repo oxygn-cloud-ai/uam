@@ -177,7 +177,9 @@ def test_write_env_file_non_claude_default(tmp_path):
     write_env_file(state, env_path)
     content = env_path.read_text()
     assert "export ANTHROPIC_BASE_URL=http://127.0.0.1:5100" in content
-    assert 'ANTHROPIC_DEFAULT_SONNET_MODEL="local:qwen3-coder-next:latest"' in content
+    # SEC-001: values are now shlex.quote()d. For safe characters this is
+    # the bare unquoted form (semantically identical when sourced).
+    assert "ANTHROPIC_DEFAULT_SONNET_MODEL=local:qwen3-coder-next:latest" in content
 
 
 def test_write_env_file_includes_capabilities(tmp_path):
@@ -212,7 +214,7 @@ def test_write_env_file_uses_alias_as_name(tmp_path):
     }
     write_env_file(state, env_path)
     content = env_path.read_text()
-    assert 'ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="qwen"' in content
+    assert "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME=qwen" in content
 
 
 def test_write_env_file_uses_model_id_when_no_alias(tmp_path):
@@ -229,7 +231,7 @@ def test_write_env_file_uses_model_id_when_no_alias(tmp_path):
     }
     write_env_file(state, env_path)
     content = env_path.read_text()
-    assert 'ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="local:qwen3-coder-next:latest"' in content
+    assert "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME=local:qwen3-coder-next:latest" in content
 
 
 def test_write_env_file_disabled_default_skipped(tmp_path):

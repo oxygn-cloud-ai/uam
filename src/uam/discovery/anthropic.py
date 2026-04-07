@@ -1,6 +1,6 @@
 """Anthropic model registration — hardcoded, always available."""
 
-from uam.config import resolve_key
+from uam.config import get_backend_timeout, resolve_key
 
 MODELS = [
     "claude-opus-4-6",
@@ -21,6 +21,7 @@ def discover_anthropic(config: dict) -> dict[str, dict]:
     anthropic_cfg = config.get("anthropic", {})
     api_key = resolve_key(anthropic_cfg.get("api_key_env", ""))
     url = anthropic_cfg.get("url", "https://api.anthropic.com")
+    timeout = get_backend_timeout(config, "anthropic")
 
     routes = {}
     for model in MODELS:
@@ -30,6 +31,7 @@ def discover_anthropic(config: dict) -> dict[str, dict]:
             "api_key": api_key,
             "original_model": model,
             "api_format": "anthropic",
+            "timeout": timeout,
         }
     for alias, target in ALIASES.items():
         if target in routes:

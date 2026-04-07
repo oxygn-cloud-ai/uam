@@ -1,7 +1,10 @@
 """Model state management — on/off toggles, default model, aliases."""
 
 import json
+import os
 import re
+import shlex
+import tempfile
 from pathlib import Path
 
 STATE_PATH = Path.home() / ".uam" / "models.json"
@@ -19,9 +22,27 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    """Write model state to ~/.uam/models.json."""
+    """Write model state to ~/.uam/models.json atomically.
+
+    SEC-005: Uses tempfile + os.replace() so a SIGTERM or disk-full event
+    mid-write cannot leave a truncated/corrupt models.json (which load_state
+    would silently treat as empty, wiping the user's configuration).
+    """
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(state, indent=2) + "\n")
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(STATE_PATH.parent), prefix=".models.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(state, indent=2) + "\n")
+        os.replace(tmp_path, STATE_PATH)
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
 
 
 def get_default(state: dict | None = None) -> str:
@@ -221,12 +242,20 @@ def write_env_file(state: dict, env_path: Path | None = None) -> None:
                 break
 
         capabilities = model_entry.get("capabilities", [])
-        caps_str = ",".join(capabilities)
+        caps_str = ",".join(str(c) for c in capabilities)
 
-        lines.append(f'export ANTHROPIC_DEFAULT_SONNET_MODEL="{default}"')
-        lines.append(f'export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="{friendly_name}"')
+        # SEC-001: Use shlex.quote() on every value to prevent shell injection.
+        # State values come from POST /state which is unauthenticated; without
+        # quoting, a malicious value could inject arbitrary shell commands when
+        # the user sources ~/.uam/env.sh.
         lines.append(
-            f'export ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES="{caps_str}"'
+            f"export ANTHROPIC_DEFAULT_SONNET_MODEL={shlex.quote(str(default))}"
+        )
+        lines.append(
+            f"export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME={shlex.quote(str(friendly_name))}"
+        )
+        lines.append(
+            f"export ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES={shlex.quote(caps_str)}"
         )
 
     env_path.parent.mkdir(parents=True, exist_ok=True)

@@ -5,7 +5,7 @@ import re
 
 import aiohttp
 
-from uam.config import resolve_key
+from uam.config import get_backend_timeout, resolve_key
 
 logger = logging.getLogger("uam.discovery.runpod")
 
@@ -16,6 +16,7 @@ PODS_QUERY = '{"query":"{ myself { pods { id name desiredStatus ports imageName 
 async def discover_runpod(config: dict, session: aiohttp.ClientSession) -> dict[str, dict]:
     """Discover models from running RunPod pods. Returns model_id -> route dict."""
     rp_config = config.get("runpod", {})
+    timeout = get_backend_timeout(config, "runpod")
     routes = {}
 
     for account_name, account in rp_config.get("accounts", {}).items():
@@ -93,6 +94,7 @@ async def discover_runpod(config: dict, session: aiohttp.ClientSession) -> dict[
                             "api_key": vllm_key,
                             "original_model": model_id,
                             "api_format": "openai",
+                            "timeout": timeout,
                         }
                         logger.info(f"[runpod:{account_name}] {route_key}")
                 except Exception as e:
