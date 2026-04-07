@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 STATE_PATH = Path.home() / ".uam" / "models.json"
+ENV_PATH = Path.home() / ".uam" / "env.sh"
 
 
 def load_state() -> dict:
@@ -145,6 +146,95 @@ def _extract_specific_alias(model_id: str) -> str:
     return ""
 
 
+def infer_capabilities(model_id: str) -> list[str]:
+    """Infer model capabilities from the model ID based on family patterns.
+
+    Strips backend prefixes (local:, runpod:, openrouter:) and org prefixes
+    (google/, meta-llama/, etc.) before matching, similar to _extract_alias.
+    """
+    name = model_id
+    if ":" in name:
+        name = name.split(":", 1)[1]
+    if "/" in name:
+        name = name.rsplit("/", 1)[-1]
+    name = name.lower()
+
+    # Full capability set: tools + streaming + thinking + vision
+    if name.startswith("claude"):
+        return ["tools", "streaming", "thinking", "vision"]
+    if name.startswith("gpt-4") or name.startswith("gpt-5") or name.startswith("gpt4") or name.startswith("gpt5"):
+        return ["tools", "streaming", "thinking", "vision"]
+    if name.startswith("gemini"):
+        return ["tools", "streaming", "thinking", "vision"]
+
+    # Tools + streaming + thinking (no vision)
+    if name.startswith("deepseek"):
+        return ["tools", "streaming", "thinking"]
+
+    # Tools + streaming
+    if name.startswith("qwen"):
+        return ["tools", "streaming"]
+    if name.startswith("llama"):
+        return ["tools", "streaming"]
+    if name.startswith("mistral") or name.startswith("mixtral"):
+        return ["tools", "streaming"]
+
+    # Default: streaming only
+    return ["streaming"]
+
+
+def write_env_file(state: dict, env_path: Path | None = None) -> None:
+    """Write the managed env file at ~/.uam/env.sh (or custom path).
+
+    Contents:
+      - Always exports ANTHROPIC_BASE_URL=http://127.0.0.1:5100
+      - If default is a non-Claude enabled model, also exports:
+          ANTHROPIC_DEFAULT_SONNET_MODEL
+          ANTHROPIC_DEFAULT_SONNET_MODEL_NAME
+          ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES
+    """
+    if env_path is None:
+        env_path = ENV_PATH
+
+    lines = [
+        "# Managed by uam — do not edit manually",
+        "export ANTHROPIC_BASE_URL=http://127.0.0.1:5100",
+    ]
+
+    default = state.get("default", "")
+    models = state.get("models", {})
+    model_entry = models.get(default) if default else None
+
+    should_override = (
+        default
+        and not default.startswith("claude-")
+        and model_entry is not None
+        and model_entry.get("enabled", False)
+    )
+
+    if should_override:
+        # Find friendly name via alias lookup
+        friendly_name = default
+        for alias, mid in state.get("aliases", {}).items():
+            if mid == default:
+                friendly_name = alias
+                break
+
+        capabilities = model_entry.get("capabilities", [])
+        caps_str = ",".join(capabilities)
+
+        lines.append(f'export ANTHROPIC_DEFAULT_SONNET_MODEL="{default}"')
+        lines.append(f'export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="{friendly_name}"')
+        lines.append(
+            f'export ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES="{caps_str}"'
+        )
+
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    content = "\n".join(lines) + "\n"
+    env_path.write_text(content)
+    env_path.chmod(0o644)
+
+
 def sync_state_with_routes(route_keys: list[str], state: dict | None = None) -> dict:
     """Sync model state with discovered routes.
 
@@ -159,10 +249,16 @@ def sync_state_with_routes(route_keys: list[str], state: dict | None = None) -> 
     user_aliases = {k: v for k, v in state.get("aliases", {}).items()
                     if v in models}  # preserve user-set aliases for known models
 
-    # Add new models as enabled
+    # Add new models as enabled with inferred capabilities
     for key in route_keys:
         if key not in models:
-            models[key] = {"enabled": True}
+            models[key] = {
+                "enabled": True,
+                "capabilities": infer_capabilities(key),
+            }
+        elif "capabilities" not in models[key]:
+            # Existing model without capabilities — backfill
+            models[key]["capabilities"] = infer_capabilities(key)
 
     state["models"] = models
 

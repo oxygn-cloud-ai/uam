@@ -9,7 +9,7 @@ from aiohttp import web
 logger = logging.getLogger("uam.proxy")
 
 from uam.router import ModelRouter
-from uam.state import load_state, save_state, is_enabled, get_default
+from uam.state import load_state, save_state, is_enabled, get_default, write_env_file
 from uam.translate import (
     anthropic_to_openai,
     openai_to_anthropic,
@@ -574,5 +574,9 @@ async def handle_post_state(request: web.Request) -> web.Response:
                 state["models"][model_id] = model_state
 
     save_state(state)
+    try:
+        write_env_file(state)
+    except OSError as e:
+        logger.warning(f"Failed to write env file: {e}")
     _invalidate_state_cache()
     return web.json_response({"status": "ok", "state": state})

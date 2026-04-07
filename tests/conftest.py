@@ -13,6 +13,7 @@ def tmp_uam_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("uam.config.CONFIG_DIR", config_dir)
     monkeypatch.setattr("uam.config.CONFIG_PATH", config_dir / "config.json")
     monkeypatch.setattr("uam.state.STATE_PATH", config_dir / "models.json")
+    monkeypatch.setattr("uam.state.ENV_PATH", config_dir / "env.sh")
 
     return tmp_path
 

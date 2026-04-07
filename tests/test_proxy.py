@@ -377,6 +377,32 @@ async def test_post_state_update_default(app_client):
     assert data["state"]["default"] == "claude-sonnet-4-6"
 
 
+async def test_post_state_writes_env_file(app_client):
+    """POST /state with a new default should write the managed env file."""
+    import uam.state as state_mod
+    save_state({
+        "default": "",
+        "aliases": {"qwen": "local:qwen3-coder-next:latest"},
+        "models": {
+            "local:qwen3-coder-next:latest": {
+                "enabled": True,
+                "capabilities": ["tools", "streaming"],
+            }
+        },
+    })
+    resp = await app_client.post(
+        "/state",
+        data=json.dumps({"default": "local:qwen3-coder-next:latest"}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status == 200
+    assert state_mod.ENV_PATH.exists()
+    content = state_mod.ENV_PATH.read_text()
+    assert "ANTHROPIC_BASE_URL=http://127.0.0.1:5100" in content
+    assert 'ANTHROPIC_DEFAULT_SONNET_MODEL="local:qwen3-coder-next:latest"' in content
+    assert 'ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="qwen"' in content
+
+
 async def test_post_state_update_models(app_client):
     save_state({
         "default": "",
