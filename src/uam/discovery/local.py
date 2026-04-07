@@ -1,5 +1,6 @@
 """Local model discovery — probes localhost ports for Ollama, vLLM, etc."""
 
+import json
 import logging
 
 import aiohttp
@@ -50,12 +51,17 @@ async def _probe_server(
 ) -> None:
     """Probe a single server URL for models."""
     for path in ["/v1/models", "/api/tags"]:
+        endpoint = f"{url}{path}"
         try:
             async with session.get(
-                f"{url}{path}",
+                endpoint,
                 timeout=aiohttp.ClientTimeout(total=5),
             ) as resp:
-                data = await resp.json()
+                try:
+                    data = await resp.json()
+                except (json.JSONDecodeError, aiohttp.ContentTypeError, ValueError) as e:
+                    logger.warning(f"Failed to parse {endpoint}: {e}")
+                    continue
 
             if path == "/api/tags":
                 for m in data.get("models", []):
