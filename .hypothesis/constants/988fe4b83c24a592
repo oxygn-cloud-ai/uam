@@ -1,4 +1,0 @@
-# file: /Volumes/TB8/OxygnAI/Repos/uam/src/uam/config.py
-# hypothesis_version: 6.151.10
-
-[120, 300, 600, 2242, 3000, 5000, 5100, 8000, 8080, 11434, '.uam', '127.0.0.1', ':', 'OPENROUTER_API_KEY', 'accounts', 'anthropic', 'api_key_env', 'config.json', 'default_backend', 'listen', 'local', 'openrouter', 'probe_ports', 'runpod', 'servers', 'timeout', 'url']

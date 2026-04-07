@@ -1,4 +1,0 @@
-# file: /Volumes/TB8/OxygnAI/Repos/uam/src/uam/discovery/runpod.py
-# hypothesis_version: 6.151.10
-
-['$RUNPOD_POD_ID', '-', '8000', '=', 'Authorization', 'Content-Type', 'RUNNING', 'VLLM_API_KEY', '[\\s,/]+', 'accounts', 'api_format', 'api_key', 'api_key_env', 'application/json', 'backend', 'data', 'desiredStatus', 'env', 'id', 'myself', 'name', 'openai', 'original_model', 'pods', 'ports', 'runpod', 'uam.discovery.runpod', 'url']

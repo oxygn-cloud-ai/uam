@@ -10,3 +10,5 @@ config.json
 .uam/
 *.log
 .DS_Store
+.coverage
+.hypothesis/

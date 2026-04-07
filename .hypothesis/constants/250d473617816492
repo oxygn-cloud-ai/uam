@@ -1,4 +1,0 @@
-# file: /Volumes/TB8/OxygnAI/Repos/uam/src/uam/proxy.py
-# hypothesis_version: 6.151.10
-
-[b'\n', 5.0, 200, 400, 401, 403, 404, 429, 502, 503, '/', '/health', '/refresh', '/state', '/v1', '/v1/messages', '/v1/messages/ask', '/v1/models', '2023-06-01', 'Authorization', 'Cache-Control', 'Content-Type', 'Expected JSON object', 'Invalid JSON', 'Invalid JSON body', 'X-Api-Key', 'aliases', 'anthropic', 'anthropic-', 'anthropic-beta', 'anthropic-version', 'api_error', 'api_key', 'application/json', 'backend', 'claude-', 'data', 'default', 'enabled', 'error', 'false', 'id', 'input_tokens', 'list', 'message', 'messages', 'model', 'model_disabled', 'model_not_found', 'models', 'no-cache', 'object', 'ok', 'original_model', 'owned_by', 'proxy_error', 'replace', 'request-id', 'retry-after', 'retry-after-ms', 'router', 'state', 'status', 'stream', 'system', 'text/event-stream', 'translation_error', 'true', 'type', 'uam.proxy', 'url', 'utf-8', 'x-', 'x-should-retry']

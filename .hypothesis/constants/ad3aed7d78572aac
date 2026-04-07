@@ -1,4 +1,0 @@
-# file: /Volumes/TB8/OxygnAI/Repos/uam/src/uam/discovery/local.py
-# hypothesis_version: 6.151.10
-
-[120, '/', '/api/tags', '/v1/models', 'api_format', 'api_key', 'backend', 'data', 'http://', 'https://', 'id', 'local', 'model', 'models', 'name', 'openai', 'original_model', 'probe_ports', 'servers', 'timeout', 'uam.discovery.local', 'url']

@@ -1,4 +1,0 @@
-# file: /Volumes/TB8/OxygnAI/Repos/uam/src/uam/discovery/openrouter.py
-# hypothesis_version: 6.151.10
-
-['Authorization', 'api_format', 'api_key', 'api_key_env', 'backend', 'data', 'id', 'openai', 'openrouter', 'original_model', 'timeout', 'url']
