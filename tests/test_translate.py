@@ -56,14 +56,18 @@ class TestAnthropicToOpenai:
         assert result["messages"][0] == {"role": "system", "content": "A\nB"}
 
     def test_anthropic_to_openai_system_list_no_text(self):
+        """System list with only non-text blocks now converts to text representation
+        instead of silently skipping (translation hardening)."""
         payload = {
             "model": "m",
             "messages": [{"role": "user", "content": "hi"}],
             "system": [{"type": "image", "data": "x"}],
         }
         result = anthropic_to_openai(payload)
-        # No system message should be added
-        assert all(m["role"] != "system" for m in result["messages"])
+        # System message IS added, with the unsupported block as text
+        system_msgs = [m for m in result["messages"] if m["role"] == "system"]
+        assert len(system_msgs) == 1
+        assert "[unsupported: image]" in system_msgs[0]["content"]
 
     def test_anthropic_to_openai_no_system(self):
         payload = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}

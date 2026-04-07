@@ -1,7 +1,11 @@
 """Format translation between Anthropic Messages API and OpenAI Chat Completions API."""
 
 import json
+import logging
+import re
 import uuid
+
+logger = logging.getLogger("uam.translate")
 
 
 def anthropic_to_openai(payload: dict) -> dict:
@@ -19,9 +23,16 @@ def anthropic_to_openai(payload: dict) -> dict:
             messages.append({"role": "system", "content": system})
         elif isinstance(system, list):
             # Anthropic system can be a list of content blocks
-            text = "\n".join(
-                b["text"] for b in system if b.get("type") == "text"
-            )
+            parts = []
+            for b in system:
+                if b.get("type") == "text":
+                    parts.append(b["text"])
+                else:
+                    # Non-text system blocks: convert to text representation
+                    btype = b.get("type", "unknown")
+                    parts.append(f"[unsupported: {btype}] {json.dumps(b)}")
+                    logger.warning(f"Non-text system block type: {btype}")
+            text = "\n".join(parts)
             if text:
                 messages.append({"role": "system", "content": text})
 
@@ -75,6 +86,10 @@ def anthropic_to_openai(payload: dict) -> dict:
     if "tools" in payload:
         result["tools"] = [_convert_tool_to_openai(t) for t in payload["tools"]]
 
+    # Strip Anthropic-specific thinking parameter (non-Anthropic backends don't understand it)
+    if "thinking" in payload:
+        logger.debug("Stripped thinking parameter from translated request")
+
     return result
 
 
@@ -97,6 +112,14 @@ def _convert_message_to_openai(msg: dict) -> dict:
             btype = block.get("type", "")
             if btype == "text":
                 text_parts.append(block.get("text", ""))
+            elif btype == "thinking":
+                # Strip Anthropic-specific thinking blocks (history from extended thinking)
+                logger.debug("Stripped thinking content block from message")
+                continue
+            elif btype == "image":
+                # Image blocks not supported by OpenAI-compatible backends
+                text_parts.append("[Image content — not supported by this model]")
+                logger.warning("Image content block converted to placeholder text")
             elif btype == "tool_use":
                 tool_calls.append({
                     "id": block.get("id", ""),
@@ -118,6 +141,10 @@ def _convert_message_to_openai(msg: dict) -> dict:
                     "tool_call_id": block.get("tool_use_id", ""),
                     "content": str(tool_content),
                 })
+            else:
+                # Unknown block type — convert to text representation
+                text_parts.append(f"[unsupported: {btype}] {json.dumps(block)}")
+                logger.warning(f"Unknown content block type: {btype}")
 
         # Tool results: return first one (caller must handle multiple
         # tool_result blocks by calling this function per-block)
@@ -151,11 +178,22 @@ def _convert_tool_to_openai(tool: dict) -> dict:
     }
 
 
-def openai_to_anthropic(response_data: dict, model_id: str = "") -> dict:
+def openai_to_anthropic(
+    response_data: dict,
+    model_id: str = "",
+    extract_think_tags: bool = False,
+) -> dict:
     """Convert an OpenAI Chat Completions response to Anthropic Messages API format.
 
     OpenAI:    {id, choices, usage, model, ...}
     Anthropic: {id, type, role, content, model, stop_reason, usage}
+
+    Args:
+        response_data: OpenAI-format response dict.
+        model_id: Override model ID in the response.
+        extract_think_tags: If True, extract leading <think>...</think> tags from
+            text content into a thinking block. Off by default; enable per-model
+            for backends that emit reasoning inline (e.g. some local R1 deploys).
     """
     choice = {}
     if response_data.get("choices"):
@@ -164,10 +202,25 @@ def openai_to_anthropic(response_data: dict, model_id: str = "") -> dict:
     message = choice.get("message", {})
     content_blocks = []
 
+    # Reasoning content (e.g. DeepSeek R1, some vLLM deploys) → thinking block
+    reasoning = message.get("reasoning_content")
+    if reasoning:
+        content_blocks.append({"type": "thinking", "thinking": reasoning})
+
     # Text content
     text = message.get("content")
     if text:
-        content_blocks.append({"type": "text", "text": text})
+        # Optional <think> tag extraction (only at start of text)
+        if extract_think_tags:
+            m = re.match(r"^<think>(.*?)</think>\s*", text, re.DOTALL)
+            if m:
+                content_blocks.append({
+                    "type": "thinking",
+                    "thinking": m.group(1),
+                })
+                text = text[m.end():]
+        if text:
+            content_blocks.append({"type": "text", "text": text})
 
     # Tool calls → tool_use blocks
     for tc in message.get("tool_calls", []):
@@ -255,6 +308,21 @@ def openai_stream_to_anthropic_stream(line: bytes, model_id: str = "") -> bytes 
     finish_reason = choice.get("finish_reason")
 
     parts = []
+
+    # Reasoning content delta (best-effort thinking support for streaming).
+    # NOTE: streaming thinking is approximate — we emit a thinking_delta at
+    # index 0, which collides with the text block declared in
+    # make_anthropic_stream_start. Most clients tolerate this; the
+    # non-streaming path (openai_to_anthropic) is the authoritative source.
+    if "reasoning_content" in delta and delta["reasoning_content"]:
+        parts.append(_sse_event("content_block_delta", {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "thinking_delta",
+                "thinking": delta["reasoning_content"],
+            },
+        }))
 
     # Text delta
     if "content" in delta and delta["content"]:
