@@ -1,24 +1,122 @@
-# uam -- Use Any Model with Claude Code
+# uam — Use Any Model with Claude Code
 
-A multi-backend model router that lets you swap the default AI model powering Claude Code to any supported model -- Anthropic, RunPod vLLM, OpenRouter, or local servers like Ollama, vLLM, and llama.cpp.
+> **A transparent proxy that lets Claude Code use any AI model** — Anthropic, OpenRouter, RunPod, Ollama, vLLM, llama.cpp, and more — without changing your workflow.
 
-uam runs a transparent HTTP proxy on `localhost:5100` that intercepts Claude Code's API requests and routes them to the backend of your choice. The entire interface is slash commands inside Claude Code -- no separate CLI, no config UI, no web dashboard. You configure everything with `/uam` and `/model`.
+[![Version](https://img.shields.io/badge/version-0.4.3-blue)](https://github.com/oxygn-cloud-ai/uam/releases)
+[![Tests](https://img.shields.io/badge/tests-366_passing-brightgreen)](#testing)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11+-blue)](https://www.python.org/)
+
+---
+
+## Why uam?
+
+Claude Code is excellent — but it's locked to Anthropic's models by default. uam unlocks it.
+
+With uam installed, your `/model` picker shows **every model from every backend you've configured**. Pick GPT-5, Gemini, Qwen3, Llama, DeepSeek, or your local Ollama instance — Claude Code uses it the same way it uses Claude. Same tools, same file edits, same workflow.
+
+**No new CLI to learn. No new config UI. No web dashboard. Just slash commands inside Claude Code.**
+
+---
+
+## Table of Contents
+
+- [How It Works](#how-it-works)
+- [Features](#features)
+- [Supported Backends](#supported-backends)
+- [Requirements](#requirements)
+- [Quick Start](#quick-start)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Backend Setup Guides](#backend-setup-guides)
+- [Configuration Reference](#configuration-reference)
+- [Security Model](#security-model)
+- [Troubleshooting](#troubleshooting)
+- [Logging and Debugging](#logging-and-debugging)
+- [Uninstalling](#uninstalling)
+- [Architecture](#architecture)
+- [Contributing](#contributing)
+- [Reporting Issues](#reporting-issues)
+- [License](#license)
+
+---
+
+## How It Works
+
+```
+You type a question in Claude Code
+        │
+        ▼
+Claude Code sends API request to ANTHROPIC_BASE_URL
+        │  (set to http://127.0.0.1:5100 during /uam setup)
+        ▼
+uam proxy receives the request
+        │
+        ▼
+Looks at your default model setting:
+   ├─ "claude-sonnet-4-6"        → forward to Anthropic (passthrough)
+   ├─ "local:qwen3-coder..."     → translate + forward to Ollama
+   ├─ "openrouter:gemini..."     → translate + forward to OpenRouter
+   └─ "runpod:my-pod/llama..."   → translate + forward to your RunPod GPU
+        │
+        ▼
+Backend generates a response
+        │
+        ▼
+uam translates the response back to Anthropic format
+        │
+        ▼
+Claude Code displays it like normal
+```
+
+You never see the proxy. You never edit JSON files manually. Everything is managed via two slash commands inside Claude Code.
 
 ---
 
 ## Features
 
-- **Swap the default AI model** -- route all Claude Code responses through any supported model
-- **Multi-backend routing** -- Anthropic, RunPod vLLM pods, OpenRouter (100+ models), local servers
-- **Auto-discovery** -- models are discovered automatically from all configured backends
-- **One-shot queries** -- type `ask gemini what is X` in normal conversation to query any model
-- **Format translation** -- transparent Anthropic-to-OpenAI API translation (and back) for non-Anthropic backends
-- **Auto-generated aliases** -- short names like `gemini`, `llama`, `qwen`, `opus` are created automatically
-- **Toggle models on/off** -- disable models you don't want cluttering the list
-- **Auto-start proxy** -- a SessionStart hook starts the proxy when Claude Code launches
-- **No CLI** -- everything happens via `/uam` and `/model` slash commands inside Claude Code
-- **Full test suite** -- 242 tests with 99% branch coverage (pytest, hypothesis, aioresponses)
-- **Security-first** -- config stores environment variable names, never actual API keys
+**Model routing**
+- Swap the default AI powering Claude Code to any supported model
+- Multi-backend: Anthropic, RunPod vLLM, OpenRouter (100+ models), local servers
+- Auto-discovery from every configured backend
+- Auto-generated short aliases (`gemini`, `qwen`, `opus`, `llama`)
+- Toggle individual models on/off
+
+**Anthropic ↔ OpenAI translation**
+- Transparent format translation in both directions
+- Streaming SSE conversion with bounded buffers
+- Tool calling, system prompts, multi-turn conversations
+- Extended thinking blocks (where backend supports them)
+- Image content fallback for non-vision models
+- Native Anthropic API passthrough for Ollama 0.14+ and llama.cpp (zero translation overhead)
+
+**One-shot queries**
+- Type `ask gemini explain this` in normal conversation to query any model without switching default
+- Hook intercepts the pattern, routes the query, returns the response inline
+
+**Production-ready**
+- 366 tests, ~99% branch coverage (pytest + hypothesis + aioresponses)
+- Structured logging with API key redaction
+- Per-backend timeouts (Anthropic 600s, cloud 300s, local 120s)
+- Atomic state file writes (no corruption on SIGTERM)
+- Retry signaling via `x-should-retry` headers (cooperates with Claude Code's built-in retry loop)
+- Bounded SSE buffer prevents OOM from misbehaving upstreams
+- Host header validation (prevents DNS rebinding from browsers)
+- Shell-injection-safe managed env file (`shlex.quote()` everywhere)
+- Race-condition-free state updates (`asyncio.Lock`)
+- All sensitive operations stripped of API keys before logging
+
+**Security-first**
+- Config stores **environment variable names**, never API key values
+- Keys resolved at runtime via `os.environ.get()` — never written to disk
+- Proxy binds to `127.0.0.1` only (not network-accessible)
+- Hooks use stdlib only (no pip dependencies that could leak data)
+
+**Stay-lean philosophy**
+- No web UI, no dashboard, no cloud service
+- ~1700 lines of Python total
+- Zero config required for basic Anthropic + localhost setup
+- Two slash commands and a hook — that's the whole interface
 
 ---
 
@@ -26,101 +124,121 @@ uam runs a transparent HTTP proxy on `localhost:5100` that intercepts Claude Cod
 
 | Prefix | Backend | Discovery | Example |
 |--------|---------|-----------|---------|
-| `claude-*` | Anthropic API | Always available | `claude-sonnet-4-6` |
+| `claude-*` | Anthropic API | Always available (hardcoded) | `claude-sonnet-4-6` |
 | `runpod:<pod>/<model>` | RunPod vLLM pods | GraphQL API discovery | `runpod:my-pod/llama-3.1-70b` |
 | `openrouter:<org>/<model>` | OpenRouter | API model listing | `openrouter:google/gemini-2.0-flash` |
-| `local:<model>` | Ollama, vLLM, etc. | Port probing + explicit servers | `local:qwen3-coder-next:latest` |
+| `local:<model>` | Ollama, vLLM, llama.cpp, etc. | Port probing + explicit servers | `local:qwen3-coder-next:latest` |
+
+**Local server types supported:**
+
+| Server | Default Port | API Format | Install |
+|--------|-------------|-----------|---------|
+| Ollama | 11434 | OpenAI or Anthropic (0.14+) | https://ollama.com |
+| vLLM | 8000 | OpenAI | `pip install vllm` |
+| llama.cpp | 8080 | OpenAI or Anthropic | https://github.com/ggerganov/llama.cpp |
+| LocalAI | 8080 | OpenAI | https://localai.io |
+| TGI (HuggingFace) | 3000 | OpenAI | https://github.com/huggingface/text-generation-inference |
+| Aphrodite | 2242 | OpenAI | https://github.com/PygmalionAI/aphrodite-engine |
+| TabbyAPI | 5000 | OpenAI | https://github.com/theroyallab/tabbyAPI |
+
+For Ollama 0.14+ and llama.cpp, configure with `api_format: "anthropic"` for zero-overhead passthrough.
 
 ---
 
 ## Requirements
 
-- Python 3.11 or later
-- Claude Code (CLI or desktop app)
-- pip (for installation)
-- At least one API key (Anthropic is required; RunPod, OpenRouter, and local servers are optional)
-
-Test dependencies are optional: `pip install -e ".[test]"` to run the test suite.
+- **Python 3.11 or later**
+- **Claude Code** (CLI or desktop app)
+- **pip** for installation
+- **At least one API key**:
+  - Anthropic key required for Claude models (the default)
+  - RunPod, OpenRouter keys optional
+  - Local servers need no keys
 
 ---
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/oxygn-cloud/uam
+git clone https://github.com/oxygn-cloud-ai/uam
 cd uam
 pip install -e .
 ```
 
 Then in Claude Code:
 
-1. Type `/uam setup` and follow the prompts
-2. Add your API keys to your shell profile (see [API Keys](#environment-variables))
+1. Run `/uam setup` and follow the prompts
+2. Add your API keys to `~/.zshrc` or `~/.bashrc` (see [API Keys](#api-keys))
 3. Restart your terminal
-4. Start a new Claude Code session (the proxy auto-starts)
-5. Type `/model` to see discovered models, toggle them on/off, and set a default
+4. Start a new Claude Code session — the proxy auto-starts via SessionStart hook
+5. Run `/model` to see discovered models, toggle them on/off, set a default
+
+**That's it.** Pick a model and Claude Code starts using it.
 
 ---
 
 ## Installation
 
-### Clone and Install
+### 1. Clone and install
 
 ```bash
-git clone https://github.com/oxygn-cloud/uam
+git clone https://github.com/oxygn-cloud-ai/uam
 cd uam
 pip install -e .
 ```
 
-This installs uam as an editable package. The proxy can be started with `python -m uam`.
+This installs uam as an editable Python package. The proxy is started with `python -m uam` (but normally the SessionStart hook handles this for you).
 
-### Run Setup
+### 2. Run setup
 
-Inside Claude Code, type:
+Inside Claude Code:
 
 ```
 /uam setup
 ```
 
-Setup performs the following steps:
+Setup performs:
 
 1. Verifies the uam package is installed and importable
-2. Creates `~/.uam/config.json` with default settings
-3. Configures local model servers (interactive -- asks about Ollama, vLLM, etc.)
+2. Creates `~/.uam/config.json` with sensible defaults
+3. Interactively configures local model servers (asks about Ollama, vLLM, etc.)
 4. Copies slash commands to `~/.claude/commands/`
 5. Copies hooks to `~/.claude/hooks/`
-6. Merges hook configuration into `~/.claude/settings.json`
+6. Merges the SessionStart hook into `~/.claude/settings.json`
 7. Adds `export ANTHROPIC_BASE_URL=http://127.0.0.1:5100` to your shell profile
 
-### Set Up API Keys
+Setup is **idempotent and safe to re-run**.
 
-Add the following to `~/.zshrc` or `~/.bashrc`:
+### 3. API keys
+
+Add to `~/.zshrc` or `~/.bashrc`:
 
 ```bash
-# Required -- Anthropic
+# Required for Claude models
 export ANTHROPIC_API_KEY_REAL="sk-ant-..."
 
-# Optional -- OpenRouter
+# Optional — OpenRouter
 export OPENROUTER_API_KEY="sk-or-..."
 
-# Optional -- RunPod
+# Optional — RunPod
 export RUNPOD_API_KEY="rpa_..."
 ```
 
-**Why `ANTHROPIC_API_KEY_REAL` instead of `ANTHROPIC_API_KEY`?** Claude Code sets `ANTHROPIC_API_KEY` itself, and setup overrides `ANTHROPIC_BASE_URL` to point to the proxy. The proxy reads your actual Anthropic key from `ANTHROPIC_API_KEY_REAL` and forwards it to the Anthropic API.
+> **Why `ANTHROPIC_API_KEY_REAL` instead of `ANTHROPIC_API_KEY`?**
+> Claude Code itself uses `ANTHROPIC_API_KEY`, and uam overrides `ANTHROPIC_BASE_URL` to point to the proxy. The proxy reads your real Anthropic key from `ANTHROPIC_API_KEY_REAL` and forwards it upstream. This separation prevents key collisions.
 
-### Restart Terminal
+### 4. Restart terminal
 
-After setup, restart your terminal to pick up the new environment variables. Then start a new Claude Code session. The proxy auto-starts via the SessionStart hook.
+After setup, restart your terminal to pick up the new environment variables. Then start a new Claude Code session.
 
 ---
 
 ## Usage
 
-### /uam -- Proxy Management
+### `/uam` — Proxy management
 
 ```
-/uam              Show proxy status (running/stopped, model count, current default)
+/uam              Show proxy status (running/stopped, model count, default)
 /uam start        Start the proxy in the background
 /uam stop         Stop the proxy
 /uam refresh      Re-discover models from all backends
@@ -128,29 +246,19 @@ After setup, restart your terminal to pick up the new environment variables. The
 /uam uninstall    Remove everything, restore stock Claude Code
 ```
 
-**`/uam`** (no arguments) -- Shows whether the proxy is running, how many models are discovered, and which model is the current default.
+Most users only ever run `/uam` to check status. The proxy auto-starts via the SessionStart hook.
 
-**`/uam start`** -- Starts the proxy as a background process. The proxy listens on the address configured in `~/.uam/config.json` (default `127.0.0.1:5100`). The PID is written to `~/.uam/uam.pid`.
-
-**`/uam stop`** -- Stops the running proxy. Reads the PID from `~/.uam/uam.pid` and terminates the process.
-
-**`/uam refresh`** -- Re-runs model discovery across all backends. Use this after starting a new local server, deploying a new RunPod pod, or adding a backend to your config.
-
-**`/uam setup`** -- The one-time installation command. Installs slash commands, hooks, config, and shell environment. Safe to re-run.
-
-**`/uam uninstall`** -- Removes all uam components and restores Claude Code to its stock configuration. See [Uninstalling](#uninstalling) for details.
-
-### /model -- Model Management
+### `/model` — Model management
 
 ```
-/model            List all models, toggle on/off, set default
+/model            List models, toggle on/off, set default
 /model refresh    Re-discover models, then show the list
 ```
 
-The `/model` command displays all discovered models grouped by backend, with their enabled/disabled status, aliases, and which is the current default:
+Example display:
 
 ```
-Default: claude-sonnet-4-6
+Default: local:qwen3-coder-next:latest
 
 Anthropic:
   [x] claude-sonnet-4-6          (alias: claude)
@@ -159,225 +267,144 @@ Anthropic:
 
 OpenRouter:
   [x] openrouter:google/gemini-2.0-flash  (alias: gemini)
+  [x] openrouter:deepseek/deepseek-chat   (alias: deepseek)
 
-Local:
-  [x] local:qwen3-coder-next:latest       (alias: qwen)
+Local (Ollama):
+  [x] local:qwen3-coder-next:latest       (alias: qwen)  ← default
+  [x] local:llama3.3:70b                  (alias: llama)
 ```
 
-**Toggling models** -- Models marked `[x]` are enabled; `[ ]` are disabled. Disabled models are ignored by the proxy and cannot be used with `ask`. Use `/model` to toggle individual models on or off.
+- `[x]` enabled, `[ ]` disabled
+- The **default** receives ALL Claude Code requests
+- Setting a non-Claude default means every Claude Code response comes from that model
+- Aliases work in `ask` commands and the `/model` picker
 
-**Setting the default** -- The default model receives ALL Claude Code requests. When you set a non-Claude model as default, every Claude Code response comes from that model instead of Anthropic. Use `/model` to change the default.
+### `ask <model> <query>` — One-shot queries
 
-### ask \<model\> \<query\>
-
-In normal conversation with Claude Code, prefix your message with `ask` followed by a model name or alias:
+In normal conversation, prefix with `ask`:
 
 ```
 ask gemini what is the capital of france
-ask llama explain quicksort in python
-ask qwen write a haiku about code
+ask qwen explain this regex
+ask deepseek can you spot the bug in my function
+ask llama write a haiku about coding
 ```
 
-This works with full model IDs or auto-generated aliases. The query is sent as a one-shot request to the specified model, and the response is returned inline.
+This sends the query to the named model **without changing your default**. Useful for second opinions or comparing answers across models.
 
-If the model is disabled, you get a message explaining how to enable it with `/model`. If the model is not found, you get a list of available models and aliases.
+If the model is disabled or not found, you get a helpful message (not an error).
 
-The `ask` feature is powered by a UserPromptSubmit hook that intercepts matching patterns before Claude Code processes them.
+### Default model swap
 
-### Default Model Swap
+When you set `local:qwen3-coder-next:latest` as default, here's what happens:
 
-When you set a non-Claude model as default (for example, `local:qwen3-coder-next:latest`), all Claude Code responses come from that model. Claude Code still sends requests addressed to `claude-*`, but the proxy transparently rewrites them to target your chosen model and translates between the Anthropic and OpenAI API formats as needed.
+1. Claude Code sends a request addressed to `claude-sonnet-4-6` (its internal default)
+2. uam intercepts the request
+3. uam swaps the model to `local:qwen3-coder-next:latest`
+4. uam translates the request from Anthropic format to OpenAI format
+5. uam forwards to your Ollama server
+6. Response comes back in OpenAI format
+7. uam translates back to Anthropic format
+8. Claude Code displays it
 
-To revert to Anthropic, set any `claude-*` model as the default via `/model`.
-
-### Model Aliases
-
-uam auto-generates short aliases from model IDs:
-
-- `openrouter:google/gemini-2.0-flash` becomes `gemini`
-- `local:qwen3-coder-next:latest` becomes `qwen`
-- `claude-opus-4-6` becomes `opus`
-- `claude-sonnet-4-6` becomes `claude`
-
-Aliases are used in `ask` commands and displayed alongside models in `/model`. They are stored in `~/.uam/models.json` and regenerated on each discovery.
-
----
-
-## Configuration Reference
-
-### ~/.uam/config.json
-
-The main configuration file. Created by `/uam setup`, editable by hand.
-
-```json
-{
-  "listen": "127.0.0.1:5100",
-  "anthropic": {
-    "url": "https://api.anthropic.com",
-    "api_key_env": "ANTHROPIC_API_KEY_REAL"
-  },
-  "runpod": {
-    "accounts": {
-      "account-name": {
-        "api_key_env": "RUNPOD_API_KEY"
-      }
-    }
-  },
-  "openrouter": {
-    "url": "https://openrouter.ai/api",
-    "api_key_env": "OPENROUTER_API_KEY"
-  },
-  "local": {
-    "probe_ports": [11434, 8000, 8080, 2242, 5000, 3000],
-    "servers": []
-  },
-  "default_backend": "anthropic"
-}
-```
-
-**Field reference:**
-
-| Field | Description | Default |
-|-------|-------------|---------|
-| `listen` | Address and port the proxy listens on | `127.0.0.1:5100` |
-| `anthropic.url` | Anthropic API base URL | `https://api.anthropic.com` |
-| `anthropic.api_key_env` | Environment variable name containing the Anthropic API key | `ANTHROPIC_API_KEY_REAL` |
-| `runpod.accounts` | Map of account names to RunPod API key env vars. Set to `{}` to disable RunPod | `{}` |
-| `openrouter.url` | OpenRouter API base URL | `https://openrouter.ai/api` |
-| `openrouter.api_key_env` | Environment variable name containing the OpenRouter API key | `OPENROUTER_API_KEY` |
-| `local.probe_ports` | Ports to probe on localhost for model servers | `[11434, 8000, 8080, 2242, 5000, 3000]` |
-| `local.servers` | Explicit server URLs for remote or non-standard servers | `[]` |
-| `default_backend` | Fallback backend for models that don't match any prefix | `anthropic` |
-
-**Config stores environment variable names, never actual API key values.** Keys are resolved at runtime via `os.environ.get()`.
-
-### ~/.uam/models.json
-
-Auto-managed by the proxy. Do not edit manually -- use `/model` instead.
-
-```json
-{
-  "default": "claude-sonnet-4-6",
-  "aliases": {
-    "claude": "claude-sonnet-4-6",
-    "opus": "claude-opus-4-6",
-    "gemini": "openrouter:google/gemini-2.0-flash"
-  },
-  "models": {
-    "claude-sonnet-4-6": { "enabled": true },
-    "claude-opus-4-6": { "enabled": true },
-    "openrouter:google/gemini-2.0-flash": { "enabled": true }
-  }
-}
-```
-
-- `default` -- the model that receives all Claude Code requests
-- `aliases` -- mapping of short names to full model IDs
-- `models` -- per-model state (enabled/disabled)
-
-### Environment Variables
-
-| Variable | Required | Backend | Description |
-|----------|----------|---------|-------------|
-| `ANTHROPIC_API_KEY_REAL` | Yes | Anthropic | Your Anthropic API key |
-| `ANTHROPIC_BASE_URL` | Yes | Proxy | Set to `http://127.0.0.1:5100` (configured by setup) |
-| `OPENROUTER_API_KEY` | No | OpenRouter | OpenRouter API key |
-| `RUNPOD_API_KEY` | No | RunPod | RunPod API key |
+**The whole tool ecosystem (Read, Edit, Bash, etc.) keeps working** because tool calls are part of the format translation. Your file edits, your bash commands, your web fetches — all of it works through the new model.
 
 ---
 
 ## Backend Setup Guides
 
-### Anthropic
+### Anthropic (always available)
 
-Always available. Anthropic models are hardcoded -- no API call is needed for discovery:
+Hardcoded model list — no API call required for discovery:
 
 - `claude-opus-4-6`
 - `claude-sonnet-4-6`
 - `claude-haiku-4-5-20251001`
+- `claude-opus-4-6[1m]` (1M context variant)
+- `claude-sonnet-4-6[1m]` (1M context variant)
 
-Set `ANTHROPIC_API_KEY_REAL` in your shell profile and you're done.
+Just set `ANTHROPIC_API_KEY_REAL` in your shell profile.
 
-### RunPod
+### OpenRouter (100+ models)
 
-For running vLLM inference on RunPod GPU pods.
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+```
 
-1. Get a RunPod API key from https://www.runpod.io/console/user/settings
-2. Add `export RUNPOD_API_KEY="rpa_..."` to your shell profile
-3. Add the account to `~/.uam/config.json`:
+Then `/uam refresh`. All available models auto-discovered. They appear as `openrouter:<org>/<model>`.
+
+Get a key at https://openrouter.ai/keys.
+
+### RunPod (your own GPU pods)
+
+```bash
+export RUNPOD_API_KEY="rpa_..."
+```
+
+Add the account to `~/.uam/config.json`:
 
 ```json
 "runpod": {
   "accounts": {
     "my-account": { "api_key_env": "RUNPOD_API_KEY" }
-  }
+  },
+  "timeout": 300
 }
 ```
 
-4. Run `/uam refresh` -- uam discovers running pods via the RunPod GraphQL API
-5. Models appear as `runpod:<pod-name>/<model-id>`
+Then `/uam refresh`. uam queries the RunPod GraphQL API to find your running pods.
 
-**Requirements for RunPod pods:**
+**Pod requirements:**
+- Status: `RUNNING`
+- Port `8000` exposed
+- vLLM with OpenAI-compatible API running on port 8000
+- Optional: `VLLM_API_KEY` env var on the pod (uam picks this up automatically, including `$RUNPOD_POD_ID` substitution)
 
-- Pod must be in RUNNING state
-- Port 8000 must be exposed (the vLLM default)
-- vLLM server must be running with the OpenAI-compatible API
+Models appear as `runpod:<pod-name>/<model-id>`.
 
-### OpenRouter
+Get a key at https://www.runpod.io/console/user/settings.
 
-Access 100+ models through OpenRouter.
+### Local servers (Ollama, vLLM, llama.cpp, etc.)
 
-1. Get an API key from https://openrouter.ai/keys
-2. Add `export OPENROUTER_API_KEY="sk-or-..."` to your shell profile
-3. The OpenRouter config is pre-configured -- it just needs the key
-4. Run `/uam refresh` -- all available models are auto-discovered
-5. Models appear as `openrouter:<org>/<model>`
+**Localhost** — auto-probed on common ports (11434, 8000, 8080, 2242, 5000, 3000). Just start your server and run `/uam refresh`.
 
-### Local Servers
-
-uam supports any server that speaks the OpenAI Chat Completions API or the Ollama API.
-
-**Supported server types:**
-
-| Server | Default Port | Discovery Endpoint | Install |
-|--------|-------------|-------------------|---------|
-| Ollama | 11434 | `/api/tags` | https://ollama.com |
-| vLLM | 8000 | `/v1/models` | `pip install vllm` |
-| llama.cpp | 8080 | `/v1/models` | https://github.com/ggerganov/llama.cpp |
-| LocalAI | 8080 | `/v1/models` | https://localai.io |
-| TGI | 3000 | `/v1/models` | https://github.com/huggingface/text-generation-inference |
-| Aphrodite | 2242 | `/v1/models` | https://github.com/PygmalionAI/aphrodite-engine |
-| TabbyAPI | 5000 | `/v1/models` | https://github.com/theroyallab/tabbyAPI |
-
-**Localhost servers** are auto-probed on the default ports listed above. No configuration is needed -- start the server, run `/model refresh`, and your models appear.
-
-**Remote servers** (on your local network or another machine) must be added to the config:
+**Remote servers** — add to config:
 
 ```json
 "local": {
   "probe_ports": [11434, 8000, 8080, 2242, 5000, 3000],
   "servers": [
     "http://192.168.1.50:11434",
-    "http://my-gpu-box:8000"
+    {
+      "url": "http://my-gpu-box:8000",
+      "api_format": "anthropic"
+    }
   ]
 }
 ```
 
-**Examples:**
+**`api_format: "anthropic"`** — set this for Ollama 0.14+ or llama.cpp servers that expose the native Anthropic Messages API. uam will skip translation entirely and proxy requests/responses verbatim. This is the lowest-overhead path.
 
-Ollama running on another machine:
-
-```json
-"servers": ["http://192.168.1.50:11434"]
-```
-
-vLLM on a local GPU (auto-discovered on localhost:8000, no config change needed):
+**Ollama example:**
 
 ```bash
-python -m vllm.entrypoints.openai.api_server --model meta-llama/Llama-3.1-70B --port 8000
+ollama serve
+ollama pull qwen3-coder
 ```
 
-llama.cpp server (auto-discovered on localhost:8080):
+Then `/uam refresh` → `local:qwen3-coder:latest` appears.
+
+**vLLM example:**
+
+```bash
+python -m vllm.entrypoints.openai.api_server \
+  --model meta-llama/Llama-3.1-70B \
+  --port 8000
+```
+
+Then `/uam refresh` → `local:meta-llama/Llama-3.1-70B` appears.
+
+**llama.cpp example:**
 
 ```bash
 ./llama-server -m model.gguf --port 8080
@@ -385,86 +412,243 @@ llama.cpp server (auto-discovered on localhost:8080):
 
 ---
 
+## Configuration Reference
+
+### `~/.uam/config.json`
+
+Created by `/uam setup`. Edit by hand if needed.
+
+```json
+{
+  "listen": "127.0.0.1:5100",
+  "anthropic": {
+    "url": "https://api.anthropic.com",
+    "api_key_env": "ANTHROPIC_API_KEY_REAL",
+    "timeout": 600
+  },
+  "runpod": {
+    "accounts": {
+      "my-account": { "api_key_env": "RUNPOD_API_KEY" }
+    },
+    "timeout": 300
+  },
+  "openrouter": {
+    "url": "https://openrouter.ai/api",
+    "api_key_env": "OPENROUTER_API_KEY",
+    "timeout": 300
+  },
+  "local": {
+    "probe_ports": [11434, 8000, 8080, 2242, 5000, 3000],
+    "servers": [],
+    "timeout": 120
+  },
+  "default_backend": "anthropic"
+}
+```
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `listen` | Address and port the proxy listens on | `127.0.0.1:5100` |
+| `anthropic.url` | Anthropic API base URL | `https://api.anthropic.com` |
+| `anthropic.api_key_env` | Env var name with the Anthropic key | `ANTHROPIC_API_KEY_REAL` |
+| `anthropic.timeout` | Request timeout in seconds | `600` |
+| `runpod.accounts` | Map of account names to RunPod key env vars | `{}` |
+| `runpod.timeout` | RunPod request timeout | `300` |
+| `openrouter.url` | OpenRouter API base URL | `https://openrouter.ai/api` |
+| `openrouter.api_key_env` | Env var name with the OpenRouter key | `OPENROUTER_API_KEY` |
+| `openrouter.timeout` | OpenRouter request timeout | `300` |
+| `local.probe_ports` | Localhost ports to probe for model servers | `[11434, 8000, 8080, 2242, 5000, 3000]` |
+| `local.servers` | Explicit server URLs (string or `{url, api_format}` dict) | `[]` |
+| `local.timeout` | Local server request timeout | `120` |
+| `default_backend` | Fallback backend for unknown models | `anthropic` |
+
+### `~/.uam/models.json`
+
+**Auto-managed by uam.** Don't edit by hand — use `/model` instead.
+
+```json
+{
+  "default": "local:qwen3-coder-next:latest",
+  "aliases": {
+    "claude": "claude-sonnet-4-6",
+    "opus": "claude-opus-4-6",
+    "qwen": "local:qwen3-coder-next:latest",
+    "gemini": "openrouter:google/gemini-2.0-flash"
+  },
+  "models": {
+    "claude-sonnet-4-6": {
+      "enabled": true,
+      "capabilities": ["tools", "streaming", "thinking", "vision"]
+    },
+    "local:qwen3-coder-next:latest": {
+      "enabled": true,
+      "capabilities": ["tools", "streaming"]
+    }
+  }
+}
+```
+
+### `~/.uam/env.sh`
+
+**Managed file.** Sourced by your shell to set Claude Code env vars based on your default model. Updated automatically when you change defaults via `/model`. File mode `0o600` (owner read/write only). Values are `shlex.quote()`-escaped to prevent shell injection.
+
+```bash
+# Managed by uam — do not edit manually
+export ANTHROPIC_BASE_URL=http://127.0.0.1:5100
+export ANTHROPIC_DEFAULT_SONNET_MODEL=local:qwen3-coder-next:latest
+export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME=qwen
+export ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES=tools,streaming
+```
+
+### Environment variables
+
+| Variable | Required | Backend | Description |
+|----------|----------|---------|-------------|
+| `ANTHROPIC_API_KEY_REAL` | Yes | Anthropic | Your real Anthropic API key (proxy reads, not Claude Code) |
+| `ANTHROPIC_BASE_URL` | Yes | Proxy | Set to `http://127.0.0.1:5100` (configured by setup) |
+| `OPENROUTER_API_KEY` | No | OpenRouter | OpenRouter API key |
+| `RUNPOD_API_KEY` | No | RunPod | RunPod API key |
+| `UAM_LOG_LEVEL` | No | Proxy | Log level: `WARNING` (default), `INFO`, `DEBUG` |
+
+---
+
+## Security Model
+
+uam takes security seriously. The proxy is a privileged process — it sees every request you make to AI models, including potentially sensitive prompts. Here's how it protects you:
+
+### API key protection
+- **Config stores environment variable names, never values.** Keys are resolved at runtime via `os.environ.get()`.
+- **Keys are never written to disk** by uam. Not in config, not in state, not in logs.
+- **`redact_headers()` strips `Authorization` and `X-Api-Key` from all log output**, even at DEBUG level.
+- **Upstream error bodies are scrubbed** of `Authorization` headers and `Bearer` tokens before being returned to the client (in case a misbehaving upstream echoes them).
+
+### Network isolation
+- **Proxy binds to `127.0.0.1` only.** Not accessible from other machines.
+- **Host header validation** rejects requests where the `Host` header isn't `127.0.0.1:5100` or `localhost:5100`. This closes the **DNS rebinding** vector — a malicious website can't trick your browser into hitting your local proxy.
+
+### File safety
+- **`~/.uam/env.sh` is mode `0o600`** (owner read/write only).
+- **All shell-interpolated values use `shlex.quote()`** — no command injection possible from POST /state.
+- **State file writes are atomic** (`tempfile + os.replace`) — SIGTERM during write doesn't corrupt your model state.
+
+### Process safety
+- **`asyncio.Lock` serializes state writes** — concurrent POST /state requests can't race.
+- **`MAX_MODEL_ID_LEN = 512`** prevents memory amplification attacks via huge model IDs.
+- **Bounded SSE buffer (1 MiB cap)** prevents OOM from a misbehaving upstream sending a giant unbroken line.
+- **Generic error messages** for proxy errors (no URLs, no internal pod IDs leaked to clients). Full detail logged at ERROR level.
+
+### Hook safety
+- **Both hooks (`uam-autostart.py` and `uam-ask-router.py`) use Python stdlib only.** No pip dependencies that could pull in malware.
+- Hooks always exit `0` — a failed hook can't block your Claude Code session.
+
+### What uam does NOT do (yet)
+- **No token authentication** on the proxy endpoints. Anything running on your machine as your user can call the proxy. (Mitigated by `127.0.0.1`-only binding and Host header validation.) Token auth is on the roadmap.
+- **No request-level encryption**. Traffic between Claude Code and uam is plain HTTP on localhost (encryption would be theatre — same machine, same user).
+
+---
+
 ## Troubleshooting
 
 ### Proxy won't start
 
-- **Port already in use** -- Another process is on port 5100. Check with `lsof -i :5100`. Kill the process or change the `listen` port in `~/.uam/config.json`.
-- **Python version** -- Requires 3.11+. Check with `python3 --version`.
-- **Missing aiohttp** -- Run `pip install -e .` from the uam repo directory.
-- **Permission denied** -- Another uam instance may be running. Check with `cat ~/.uam/uam.pid` and kill the old process.
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Address already in use` | Port 5100 occupied | `lsof -i :5100`, kill the process, or change `listen` in config |
+| `ModuleNotFoundError: aiohttp` | Missing dependency | `pip install -e .` from the uam repo directory |
+| `python: command not found` | Python 3.11+ not in PATH | Install Python 3.11+ |
+| Process exits immediately | Stale PID file | `rm ~/.uam/uam.pid && /uam start` |
 
 ### Models not discovered
 
-- **Local server not running** -- Start your Ollama/vLLM server, then run `/uam refresh`.
-- **Wrong port** -- Ensure your server is on a probed port (11434, 8000, 8080, 2242, 5000, 3000) or add it to `servers` in the config.
-- **Remote server unreachable** -- Test connectivity: `curl http://your-server:port/api/tags` (Ollama) or `curl http://your-server:port/v1/models` (OpenAI-compatible servers).
-- **API key not set** -- For RunPod/OpenRouter, verify the env var is set: `echo $RUNPOD_API_KEY`.
-- **RunPod pods not running** -- Pods must be in RUNNING state with port 8000 exposed.
+| Symptom | Fix |
+|---------|-----|
+| Local server not appearing | Make sure server is running, check it's on a probed port (11434/8000/8080/2242/5000/3000) or in `local.servers`, then `/uam refresh` |
+| Remote server unreachable | Test with `curl http://your-server:port/v1/models` or `curl http://your-server:port/api/tags` |
+| OpenRouter empty | `echo $OPENROUTER_API_KEY` to verify it's set, then `/uam refresh` |
+| RunPod empty | Verify `echo $RUNPOD_API_KEY`, check pods are RUNNING with port 8000 exposed |
 
-### "ask" not working
+### `ask` not working
 
-- **Hook not installed** -- Run `/uam setup` or check `~/.claude/settings.json` for the UserPromptSubmit hook entry.
-- **Model disabled** -- Enable it with `/model`.
-- **Model not found** -- Check the exact name or alias with `/model`.
-- **Proxy not running** -- Start it with `/uam start`.
+| Symptom | Fix |
+|---------|-----|
+| Pattern not matched | Check `~/.claude/settings.json` has the UserPromptSubmit hook entry, or run `/uam setup` |
+| "Model is off" message | Run `/model` and enable the model |
+| "Model not configured" | Run `/model` to see exact names/aliases |
+| Hangs forever | Run `/uam status` — the proxy may not be running |
 
-### Format translation issues
+### Translation issues
 
-- **Tool calling errors** -- Some models don't support function/tool calling. Try a model that does, or simplify the request.
-- **Streaming glitches** -- Check `/tmp/uam.log` for buffering errors.
-- **Empty responses** -- The backend model may not support the requested parameters.
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Empty responses | Backend model doesn't support requested params | Try a different model |
+| Tool calling errors | Model doesn't support function calling | Use a tool-capable model (qwen3-coder, llama-3.x, gpt-4, claude-*) |
+| Garbled streaming | Buffer issue | Check `~/.uam/uam.log` for buffer warnings |
 
 ### Connection timeouts
 
-- **Discovery timeout** -- Remote servers have a 5-second probe timeout. Ensure the server is responsive.
-- **Request timeout** -- The proxy has a 600-second overall timeout. This should be sufficient for even very long requests.
+The proxy uses per-backend timeouts:
+- Anthropic: 600s
+- OpenRouter / RunPod: 300s
+- Local: 120s
+
+Override in `~/.uam/config.json` per backend.
 
 ---
 
 ## Logging and Debugging
 
-**Proxy log:**
+### Log file
 
 ```bash
-cat /tmp/uam.log
+tail -f ~/.uam/uam.log
 ```
 
-**Health check:**
+The proxy writes to `~/.uam/uam.log` with rotation (5 MB max, 3 backups). API keys are automatically redacted.
+
+### Log levels
+
+```bash
+UAM_LOG_LEVEL=DEBUG python -m uam   # Verbose
+UAM_LOG_LEVEL=INFO python -m uam    # Normal operations
+UAM_LOG_LEVEL=WARNING python -m uam # Errors only (default)
+```
+
+### Health check
 
 ```bash
 curl http://127.0.0.1:5100/health
 ```
 
-**List discovered models:**
+### List discovered models
 
 ```bash
 curl http://127.0.0.1:5100/v1/models | python3 -m json.tool
 ```
 
-**Check current state:**
+### Check current state
 
 ```bash
 curl http://127.0.0.1:5100/state | python3 -m json.tool
 ```
 
-**Trigger re-discovery:**
+### Trigger re-discovery
 
 ```bash
 curl -X POST http://127.0.0.1:5100/refresh
 ```
 
-**Test a specific backend directly:**
+### Test backends directly
 
 ```bash
-# Ollama
+# Ollama on remote machine
 curl http://192.168.1.50:11434/api/tags
 
-# vLLM
+# vLLM on localhost
 curl http://localhost:8000/v1/models
 
 # OpenRouter
-curl -H "Authorization: Bearer $OPENROUTER_API_KEY" https://openrouter.ai/api/v1/models
+curl -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+     https://openrouter.ai/api/v1/models
 ```
 
 ---
@@ -477,57 +661,110 @@ Inside Claude Code:
 /uam uninstall
 ```
 
-This performs the following steps:
-
-1. Stops the proxy if it is running
+This:
+1. Stops the proxy (if running)
 2. Removes slash commands from `~/.claude/commands/`
 3. Removes hooks from `~/.claude/hooks/`
 4. Removes hook entries from `~/.claude/settings.json`
 5. Removes `ANTHROPIC_BASE_URL` from your shell profile
-6. Optionally removes `~/.uam/` (config and model state)
+6. Optionally removes `~/.uam/` (config, state, logs)
 7. Uninstalls the pip package
 
 After uninstalling, Claude Code's built-in `/model` command is restored. Restart your terminal and start a new Claude Code session.
 
 ---
 
-## Reporting Issues
+## Architecture
 
-Found a bug? Open an issue at https://github.com/oxygn-cloud/uam/issues
+For a deep dive into how uam works internally — request flow, module structure, security model, error handling, and design decisions — see [ARCHITECTURE.md](ARCHITECTURE.md).
 
-Include the following:
+For the project's vision, mission, and design principles, see [PHILOSOPHY.md](PHILOSOPHY.md).
 
-1. **What happened** -- describe the issue
-2. **What you expected** -- what should have happened
-3. **Proxy log** -- `cat /tmp/uam.log` (last 50 lines)
-4. **Config** -- `cat ~/.uam/config.json` (safe to share -- it contains env var names, not keys)
-5. **Model list** -- `curl http://127.0.0.1:5100/v1/models`
-6. **Error message** -- the exact error text
-7. **Environment** -- Python version, OS, Claude Code version
+For known issues and security findings, see [SECURITY_ISSUES.md](SECURITY_ISSUES.md), [CODE_ISSUES.md](CODE_ISSUES.md), and [PERFORMANCE_ISSUES.md](PERFORMANCE_ISSUES.md).
 
 ---
 
 ## Contributing
 
+Contributions welcome. Please follow these guidelines:
+
+### Setup
+
 ```bash
-git clone https://github.com/oxygn-cloud/uam
+git clone https://github.com/oxygn-cloud-ai/uam
 cd uam
-pip install -e .
-python -m uam                  # Start proxy in foreground
-python -m uam --skip-discovery # Anthropic-only mode (faster for development)
+pip install -e ".[test]"
 ```
 
-The proxy runs on `http://127.0.0.1:5100`. Use curl to test endpoints directly.
-
-### Running Tests
+### Development workflow
 
 ```bash
-pip install -e ".[test]"
+python -m uam                  # Start proxy in foreground
+python -m uam --skip-discovery # Anthropic-only mode (faster for dev)
+```
+
+### Testing
+
+```bash
 pytest tests/ -v --cov=uam --cov-report=term-missing --cov-branch
 ```
+
+uam follows **strict TDD** — write failing tests first, then implement to make them pass. Current state: **366 tests, ~99% branch coverage**. New code must include tests. PRs without tests will be asked to add them.
+
+### Code style
+
+- Python 3.11+ syntax (use `match` statements, `|` union types, etc.)
+- Async/await for all I/O
+- Logging via `logging.getLogger("uam.<module>")` — never `print()`
+- Type hints on public functions
+- Docstrings on public functions and modules
+- No new dependencies without strong justification (uam is intentionally lean)
+
+### Submitting changes
+
+1. Fork and create a feature branch
+2. Write tests first (red)
+3. Implement until tests pass (green)
+4. Run `pytest tests/` — must be all green
+5. Bump the version in `pyproject.toml` and `src/uam/__init__.py`
+6. Open a PR with a clear description of the change and why
+
+---
+
+## Reporting Issues
+
+Found a bug? Open an issue at https://github.com/oxygn-cloud-ai/uam/issues.
+
+Please include:
+
+1. **What happened** — describe the issue
+2. **What you expected** — the intended behavior
+3. **Steps to reproduce** — minimal example
+4. **Proxy log** — last 50 lines of `~/.uam/uam.log`
+5. **Config** — `cat ~/.uam/config.json` (safe to share — only env var names, no keys)
+6. **Model list** — `curl http://127.0.0.1:5100/v1/models`
+7. **Environment** — Python version, OS, Claude Code version, uam version
+
+Security issues should be reported privately. See [SECURITY_ISSUES.md](SECURITY_ISSUES.md) for the disclosure process.
 
 ---
 
 ## License
 
-MIT
+[MIT](LICENSE) — see the LICENSE file for details.
+
+---
+
+## Acknowledgments
+
+uam stands on the shoulders of giants:
+
+- **Anthropic** for [Claude Code](https://github.com/anthropics/claude-code) and the Messages API
+- **claude-code-router** by musistudio for proving the proxy approach scales
+- **LiteLLM** for pioneering the multi-model translation patterns
+- **Ollama** and **llama.cpp** for native Anthropic API support that makes local inference seamless
+- The **OpenRouter** team for unifying access to 100+ models behind one API
+
+---
+
+**Built with care by [@oxygn-cloud-ai](https://github.com/oxygn-cloud-ai) — because Claude Code shouldn't be locked to one model.**
