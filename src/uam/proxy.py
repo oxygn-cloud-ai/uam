@@ -68,6 +68,8 @@ def create_app(router: ModelRouter) -> web.Application:
 
 def _needs_translation(route: dict) -> bool:
     """Check if a route needs Anthropic ↔ OpenAI format translation."""
+    if route.get("api_format") == "anthropic":
+        return False  # Native Anthropic API — no translation needed
     return route["backend"] != "anthropic"
 
 
@@ -175,15 +177,18 @@ async def _proxy_anthropic_native(
         async with router.session.post(
             target_url, data=json.dumps(payload), headers=headers
         ) as upstream:
+            retry_hdrs = _retry_headers(upstream.status, dict(upstream.headers)) if upstream.status >= 400 else {}
             if is_stream:
+                resp_headers = {
+                    "Content-Type": upstream.headers.get(
+                        "Content-Type", "text/event-stream"
+                    ),
+                    "Cache-Control": "no-cache",
+                }
+                resp_headers.update(retry_hdrs)
                 resp = web.StreamResponse(
                     status=upstream.status,
-                    headers={
-                        "Content-Type": upstream.headers.get(
-                            "Content-Type", "text/event-stream"
-                        ),
-                        "Cache-Control": "no-cache",
-                    },
+                    headers=resp_headers,
                 )
                 _forward_response_headers(upstream, resp)
                 await resp.prepare(request)
@@ -199,6 +204,7 @@ async def _proxy_anthropic_native(
                     content_type=upstream.headers.get(
                         "Content-Type", "application/json"
                     ),
+                    headers=retry_hdrs,
                 )
                 _forward_response_headers(upstream, resp)
                 return resp
@@ -206,6 +212,7 @@ async def _proxy_anthropic_native(
         return web.json_response(
             {"error": {"type": "proxy_error", "message": str(e)}},
             status=502,
+            headers={"x-should-retry": "false"},
         )
 
 
@@ -239,13 +246,16 @@ async def _proxy_with_translation(
         async with router.session.post(
             target_url, data=json.dumps(openai_payload), headers=headers
         ) as upstream:
+            retry_hdrs = _retry_headers(upstream.status, dict(upstream.headers)) if upstream.status >= 400 else {}
             if is_stream:
+                resp_headers = {
+                    "Content-Type": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                }
+                resp_headers.update(retry_hdrs)
                 resp = web.StreamResponse(
                     status=200 if upstream.status < 400 else upstream.status,
-                    headers={
-                        "Content-Type": "text/event-stream",
-                        "Cache-Control": "no-cache",
-                    },
+                    headers=resp_headers,
                 )
                 await resp.prepare(request)
 
@@ -291,6 +301,7 @@ async def _proxy_with_translation(
                         body=_make_anthropic_error(error_body, upstream.status),
                         status=upstream.status,
                         content_type="application/json",
+                        headers=retry_hdrs,
                     )
 
                 data = await upstream.json()
@@ -300,6 +311,7 @@ async def _proxy_with_translation(
         return web.json_response(
             {"error": {"type": "proxy_error", "message": str(e)}},
             status=502,
+            headers={"x-should-retry": "false"},
         )
 
 
@@ -314,6 +326,26 @@ def _make_anthropic_error(error_body: bytes, status: int) -> bytes:
     return json.dumps({
         "error": {"type": "api_error", "message": msg}
     }).encode()
+
+
+def _retry_headers(status: int, upstream_headers: dict | None = None) -> dict:
+    """Build retry-signal headers based on upstream HTTP status.
+
+    Claude Code already retries 10 times on its own. We don't retry inside the
+    proxy — instead we propagate x-should-retry and retry-after* so the caller
+    can make informed decisions.
+    """
+    if status in (503, 429):
+        headers: dict[str, str] = {"x-should-retry": "true"}
+        if upstream_headers:
+            for h in ("retry-after", "retry-after-ms"):
+                val = upstream_headers.get(h)
+                if val:
+                    headers[h] = val
+        return headers
+    if status in (400, 401, 403, 404):
+        return {"x-should-retry": "false"}
+    return {}
 
 
 def _forward_response_headers(upstream, resp: web.StreamResponse) -> None:
@@ -373,9 +405,11 @@ async def handle_ask(request: web.Request) -> web.StreamResponse:
             ) as upstream:
                 if upstream.status >= 400:
                     error_body = await upstream.read()
+                    retry_hdrs = _retry_headers(upstream.status, dict(upstream.headers))
                     return web.Response(
                         body=error_body, status=upstream.status,
                         content_type="application/json",
+                        headers=retry_hdrs,
                     )
                 data = await upstream.json()
                 anthropic_resp = openai_to_anthropic(data, model)
@@ -384,6 +418,7 @@ async def handle_ask(request: web.Request) -> web.StreamResponse:
             return web.json_response(
                 {"error": {"type": "proxy_error", "message": str(e)}},
                 status=502,
+                headers={"x-should-retry": "false"},
             )
     else:
         payload["model"] = route["original_model"]
@@ -395,15 +430,18 @@ async def handle_ask(request: web.Request) -> web.StreamResponse:
             async with router.session.post(
                 target_url, data=json.dumps(payload), headers=headers
             ) as upstream:
+                retry_hdrs = _retry_headers(upstream.status, dict(upstream.headers)) if upstream.status >= 400 else {}
                 data = await upstream.read()
                 return web.Response(
                     body=data, status=upstream.status,
                     content_type="application/json",
+                    headers=retry_hdrs,
                 )
         except Exception as e:
             return web.json_response(
                 {"error": {"type": "proxy_error", "message": str(e)}},
                 status=502,
+                headers={"x-should-retry": "false"},
             )
 
 
@@ -443,14 +481,17 @@ async def handle_count_tokens(request: web.Request) -> web.Response:
         async with router.session.post(
             target_url, data=json.dumps(payload), headers=headers
         ) as upstream:
+            retry_hdrs = _retry_headers(upstream.status, dict(upstream.headers)) if upstream.status >= 400 else {}
             data = await upstream.read()
             return web.Response(
                 body=data, status=upstream.status, content_type="application/json",
+                headers=retry_hdrs,
             )
     except Exception as e:
         return web.json_response(
             {"error": {"type": "proxy_error", "message": str(e)}},
             status=502,
+            headers={"x-should-retry": "false"},
         )
 
 
