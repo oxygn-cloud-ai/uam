@@ -92,8 +92,11 @@ def anthropic_to_openai(payload: dict) -> dict:
     if "tools" in payload:
         result["tools"] = [_convert_tool_to_openai(t) for t in payload["tools"]]
 
-    # Strip Anthropic-specific thinking parameter (non-Anthropic backends don't understand it)
+    # Strip Anthropic-specific thinking parameter (non-Anthropic backends don't understand it).
+    # The result dict is built allowlist-style so thinking is not copied, but we also explicitly
+    # delete it from result in case future refactors change that assumption.
     if "thinking" in payload:
+        result.pop("thinking", None)
         logger.debug("Stripped thinking parameter from translated request")
 
     return result
