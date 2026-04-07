@@ -49,14 +49,29 @@ _SECRET_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 
-# State cache — avoid disk I/O on every request
+# State cache — avoid disk I/O on every request.
+#
+# Concurrency model: uam runs in a single asyncio event loop (aiohttp), so
+# reads/writes of module globals are atomic at the bytecode level in CPython
+# — no true data race. The remaining concern is *eventual consistency*: a
+# request that starts reading _state_cache right before _invalidate_state_cache
+# fires may observe the pre-invalidation snapshot. This is bounded by the
+# 5-second TTL: in the worst case, a mutation takes up to 5s to be reflected
+# for concurrent in-flight readers. This is intentional — callers of POST
+# /state and POST /refresh should not rely on read-your-writes semantics
+# across concurrent requests. If stronger guarantees are needed, wrap cache
+# reads/writes in an asyncio.Lock.
 _state_cache: dict = {}
 _state_cache_time: float = 0
 _STATE_CACHE_TTL: float = 5.0  # seconds
 
 
 def _get_state() -> dict:
-    """Get model state, using cache if fresh."""
+    """Get model state, using cache if fresh.
+
+    Eventually consistent with _invalidate_state_cache — see module
+    comment above the cache globals.
+    """
     global _state_cache, _state_cache_time
     now = time.monotonic()
     if now - _state_cache_time > _STATE_CACHE_TTL or not _state_cache:
@@ -66,9 +81,14 @@ def _get_state() -> dict:
 
 
 def _invalidate_state_cache() -> None:
-    """Force reload state from disk on next access."""
-    global _state_cache_time
+    """Force reload state from disk on next access.
+
+    Eventually consistent: concurrent readers may still see the old
+    snapshot until the next _get_state() call. Bounded by _STATE_CACHE_TTL.
+    """
+    global _state_cache, _state_cache_time
     _state_cache_time = 0
+    _state_cache = {}
 
 
 def _route_timeout(route: dict) -> aiohttp.ClientTimeout | None:
