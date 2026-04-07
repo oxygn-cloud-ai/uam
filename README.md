@@ -2,8 +2,8 @@
 
 > **A transparent proxy that lets Claude Code use any AI model** — Anthropic, OpenRouter, RunPod, Ollama, vLLM, llama.cpp, and more — without changing your workflow.
 
-[![Version](https://img.shields.io/badge/version-0.4.3-blue)](https://github.com/oxygn-cloud-ai/uam/releases)
-[![Tests](https://img.shields.io/badge/tests-366_passing-brightgreen)](#contributing)
+[![Version](https://img.shields.io/badge/version-0.4.17-blue)](https://github.com/oxygn-cloud-ai/uam/releases)
+[![Tests](https://img.shields.io/badge/tests-374_passing-brightgreen)](#contributing)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11+-blue)](https://www.python.org/)
 
@@ -709,7 +709,7 @@ python -m uam --skip-discovery # Anthropic-only mode (faster for dev)
 pytest tests/ -v --cov=uam --cov-report=term-missing --cov-branch
 ```
 
-uam follows **strict TDD** — write failing tests first, then implement to make them pass. Current state: **366 tests, ~99% branch coverage**. New code must include tests. PRs without tests will be asked to add them.
+uam follows **strict TDD** — write failing tests first, then implement to make them pass. Current state: **374 tests, ~99% branch coverage**. New code must include tests. PRs without tests will be asked to add them.
 
 ### Code style
 
