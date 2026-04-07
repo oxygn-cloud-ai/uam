@@ -298,7 +298,7 @@ Hooks are Python scripts that Claude Code runs at specific lifecycle points. The
 **Behavior:**
 1. Sends `GET /health` to `127.0.0.1:5100` with a 2-second timeout.
 2. If the proxy responds, exits immediately (already running).
-3. If not running, spawns `python -m uam` as a detached background process with stdout/stderr redirected to `/tmp/uam.log`.
+3. If not running, spawns `python -m uam` as a detached background process with stdout/stderr redirected to `~/.uam/uam.log`.
 4. Polls the health endpoint once per second for up to 5 seconds.
 5. Exits silently whether or not the proxy started successfully.
 

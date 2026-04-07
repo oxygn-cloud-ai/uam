@@ -39,7 +39,7 @@ Parse `$ARGUMENTS` (case-insensitive, default to "status" if empty):
 2. If already running, say so
 3. If not running:
    ```bash
-   nohup python -m uam > /tmp/uam.log 2>&1 &
+   mkdir -p ~/.uam && nohup python -m uam > ~/.uam/uam.log 2>&1 &
    sleep 3
    ```
 4. Verify it started via health check
