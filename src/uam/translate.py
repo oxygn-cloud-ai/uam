@@ -26,7 +26,10 @@ def anthropic_to_openai(payload: dict) -> dict:
             parts = []
             for b in system:
                 if b.get("type") == "text":
-                    parts.append(b["text"])
+                    # M4: use .get() so a malformed {"type": "text"} (no
+                    # "text" key, which Anthropic SDK can produce from
+                    # cached prompt blocks) does not raise KeyError.
+                    parts.append(b.get("text", ""))
                 else:
                     # Non-text system blocks: convert to text representation
                     btype = b.get("type", "unknown")
@@ -42,9 +45,12 @@ def anthropic_to_openai(payload: dict) -> dict:
         content = msg.get("content")
         if isinstance(content, list):
             tool_results = [b for b in content if b.get("type") == "tool_result"]
-            if len(tool_results) > 1:
-                # Expand: non-tool-result content first, then each tool_result
-                non_tool = [b for b in content if b.get("type") != "tool_result"]
+            non_tool = [b for b in content if b.get("type") != "tool_result"]
+            # H4: any number of tool_result blocks (including exactly one)
+            # combined with other content must expand into a non-tool-result
+            # message followed by the tool messages — otherwise the text
+            # narrative is silently dropped by _convert_message_to_openai.
+            if tool_results and (len(tool_results) > 1 or non_tool):
                 if non_tool:
                     messages.append(_convert_message_to_openai(
                         {"role": msg.get("role", "user"), "content": non_tool}
@@ -309,20 +315,14 @@ def openai_stream_to_anthropic_stream(line: bytes, model_id: str = "") -> bytes 
 
     parts = []
 
-    # Reasoning content delta (best-effort thinking support for streaming).
-    # NOTE: streaming thinking is approximate — we emit a thinking_delta at
-    # index 0, which collides with the text block declared in
-    # make_anthropic_stream_start. Most clients tolerate this; the
-    # non-streaming path (openai_to_anthropic) is the authoritative source.
-    if "reasoning_content" in delta and delta["reasoning_content"]:
-        parts.append(_sse_event("content_block_delta", {
-            "type": "content_block_delta",
-            "index": 0,
-            "delta": {
-                "type": "thinking_delta",
-                "thinking": delta["reasoning_content"],
-            },
-        }))
+    # H3: Streaming reasoning_content is intentionally NOT emitted.
+    # The Anthropic streaming protocol requires that thinking_delta events
+    # only target a content block whose content_block_start declared
+    # type=thinking, but make_anthropic_stream_start opens index 0 as a
+    # text block. Emitting thinking_delta against a text block is a
+    # protocol violation that strict clients (newer Claude Code) reject.
+    # The non-streaming path (openai_to_anthropic) remains the
+    # authoritative source for reasoning_content.
 
     # Text delta
     if "content" in delta and delta["content"]:

@@ -1,14 +1,22 @@
 """Model state management — on/off toggles, default model, aliases."""
 
 import json
+import logging
 import os
 import re
 import shlex
 import tempfile
 from pathlib import Path
 
+logger = logging.getLogger("uam.state")
+
 STATE_PATH = Path.home() / ".uam" / "models.json"
 ENV_PATH = Path.home() / ".uam" / "env.sh"
+
+# SEC-011: Maximum length for any model id we will accept from discovery
+# or from POST /state. Anything longer is rejected to bound the cost of
+# regex/scanning hot paths.
+MAX_MODEL_ID_LEN = 512
 
 
 def load_state() -> dict:
@@ -16,8 +24,11 @@ def load_state() -> dict:
     if STATE_PATH.exists():
         try:
             return json.loads(STATE_PATH.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
+        except (json.JSONDecodeError, OSError) as e:
+            # SEC-012: previously we silently swallowed corrupt-state errors
+            # and reset to defaults, leaving no audit trail when a user's
+            # configuration disappeared.
+            logger.error("Failed to load state from %s: %s", STATE_PATH, e)
     return {"default": "", "aliases": {}, "models": {}}
 
 
@@ -188,16 +199,34 @@ def infer_capabilities(model_id: str) -> list[str]:
     if name.startswith("gemini"):
         return ["tools", "streaming", "thinking", "vision"]
 
+    # Vision-capable open models
+    if name.startswith("llava") or name.startswith("gemma-3"):
+        return ["tools", "streaming", "vision"]
+
     # Tools + streaming + thinking (no vision)
     if name.startswith("deepseek"):
         return ["tools", "streaming", "thinking"]
 
-    # Tools + streaming
+    # M3: gpt-3.5 supports tools and streaming.
+    if name.startswith("gpt-3") or name.startswith("gpt3"):
+        return ["tools", "streaming"]
+
+    # Tools + streaming (M2: add gemma, phi, command, dbrx, falcon, yi)
     if name.startswith("qwen"):
         return ["tools", "streaming"]
-    if name.startswith("llama"):
+    if name.startswith("llama") or name.startswith("codellama"):
         return ["tools", "streaming"]
-    if name.startswith("mistral") or name.startswith("mixtral"):
+    if name.startswith("mistral") or name.startswith("mixtral") or name.startswith("codestral"):
+        return ["tools", "streaming"]
+    if name.startswith("gemma"):
+        return ["tools", "streaming"]
+    if name.startswith("phi"):
+        return ["tools", "streaming"]
+    if name.startswith("command"):
+        return ["tools", "streaming"]
+    if name.startswith("dbrx"):
+        return ["tools", "streaming"]
+    if name.startswith("yi-") or name == "yi":
         return ["tools", "streaming"]
 
     # Default: streaming only
@@ -241,7 +270,11 @@ def write_env_file(state: dict, env_path: Path | None = None) -> None:
                 friendly_name = alias
                 break
 
-        capabilities = model_entry.get("capabilities", [])
+        # M5: when capabilities is missing/empty (e.g. user manually edited
+        # models.json or pre-Phase-1 state), fall back to inferred caps so
+        # Claude Code doesn't see an empty SUPPORTED_CAPABILITIES="" and
+        # disable all features for the swap target.
+        capabilities = model_entry.get("capabilities") or infer_capabilities(default)
         caps_str = ",".join(str(c) for c in capabilities)
 
         # SEC-001: Use shlex.quote() on every value to prevent shell injection.
@@ -261,7 +294,10 @@ def write_env_file(state: dict, env_path: Path | None = None) -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     content = "\n".join(lines) + "\n"
     env_path.write_text(content)
-    env_path.chmod(0o644)
+    # SEC-007: 0o600 — only the owning user can read. The file may grow
+    # to contain sensitive exports in the future; lock it down now so we
+    # don't have to remember when we add them.
+    env_path.chmod(0o600)
 
 
 def sync_state_with_routes(route_keys: list[str], state: dict | None = None) -> dict:
@@ -273,6 +309,17 @@ def sync_state_with_routes(route_keys: list[str], state: dict | None = None) -> 
     """
     if state is None:
         state = load_state()
+
+    # SEC-011: bound model id length so a malicious upstream cannot force
+    # O(n) regex/scan work per request with a 1 MB id.
+    rejected = [k for k in route_keys if len(k) > MAX_MODEL_ID_LEN]
+    if rejected:
+        logger.warning(
+            "Rejected %d model id(s) exceeding %d chars",
+            len(rejected),
+            MAX_MODEL_ID_LEN,
+        )
+    route_keys = [k for k in route_keys if len(k) <= MAX_MODEL_ID_LEN]
 
     models = state.get("models", {})
     user_aliases = {k: v for k, v in state.get("aliases", {}).items()

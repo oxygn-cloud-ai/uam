@@ -1,0 +1,4 @@
+# file: /Volumes/TB8/OxygnAI/Repos/uam/src/uam/translate.py
+# hypothesis_version: 6.151.10
+
+['[DONE]', 'arguments', 'assistant', 'choices', 'completion_tokens', 'content', 'content_block', 'content_block_delta', 'content_block_start', 'content_block_stop', 'content_filter', 'data: ', 'delta', 'description', 'end_turn', 'finish_reason', 'function', 'id', 'image', 'index', 'input', 'input_json_delta', 'input_schema', 'input_tokens', 'length', 'max_tokens', 'message', 'message_delta', 'message_start', 'message_stop', 'messages', 'model', 'name', 'output_tokens', 'parameters', 'partial_json', 'prompt_tokens', 'reasoning_content', 'replace', 'role', 'stop', 'stop_reason', 'stop_sequence', 'stop_sequences', 'stream', 'system', 'temperature', 'text', 'text_delta', 'thinking', 'tool', 'tool_call_id', 'tool_calls', 'tool_result', 'tool_use', 'tool_use_id', 'tools', 'top_p', 'type', 'uam.translate', 'unknown', 'usage', 'user', 'utf-8', '{}']

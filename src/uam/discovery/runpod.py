@@ -26,6 +26,10 @@ async def discover_runpod(config: dict, session: aiohttp.ClientSession) -> dict[
             continue
 
         try:
+            # SEC-009: explicit per-request timeout — do not rely on the
+            # session-level 600s for the GraphQL POST. A wedged RunPod API
+            # would otherwise stall discovery for 10 minutes per account
+            # and block /refresh + proxy startup.
             async with session.post(
                 RUNPOD_GRAPHQL,
                 data=PODS_QUERY,
@@ -33,6 +37,7 @@ async def discover_runpod(config: dict, session: aiohttp.ClientSession) -> dict[
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {api_key}",
                 },
+                timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 data = await resp.json()
 

@@ -1,0 +1,4 @@
+# file: /Volumes/TB8/OxygnAI/Repos/uam/src/uam/discovery/__init__.py
+# hypothesis_version: 6.151.10
+
+['discover_anthropic', 'discover_local', 'discover_openrouter', 'discover_runpod']

@@ -1,0 +1,4 @@
+# file: /Volumes/TB8/OxygnAI/Repos/uam/src/uam/state.py
+# hypothesis_version: 6.151.10
+
+[384, 512, '([a-z]+)', ',', '.models.', '.tmp', '.uam', '/', ':', 'aliases', 'capabilities', 'claude', 'claude-', 'codellama', 'codestral', 'command', 'dbrx', 'deepseek', 'default', 'enabled', 'env.sh', 'falcon', 'flash', 'gemini', 'gemma', 'gemma-3', 'gpt', 'gpt-3', 'gpt-4', 'gpt-5', 'gpt3', 'gpt4', 'gpt5', 'haiku', 'llama', 'llava', 'mini', 'mistral', 'mixtral', 'models', 'models.json', 'nano', 'o1', 'o3', 'o4', 'opus', 'phi', 'pro', 'qwen', 'solar', 'sonnet', 'starcoder', 'streaming', 'thinking', 'tools', 'uam.state', 'ultra', 'vicuna', 'vision', 'w', 'wizardlm', 'yi', 'yi-']

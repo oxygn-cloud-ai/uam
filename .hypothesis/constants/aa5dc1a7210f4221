@@ -1,0 +1,4 @@
+# file: /Volumes/TB8/OxygnAI/Repos/uam/src/uam/discovery/anthropic.py
+# hypothesis_version: 6.151.10
+
+['anthropic', 'api_format', 'api_key', 'api_key_env', 'backend', 'claude-opus-4-6', 'claude-opus-4-6[1m]', 'claude-sonnet-4-6', 'original_model', 'timeout', 'url']

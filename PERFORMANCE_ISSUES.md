@@ -65,7 +65,17 @@ frames so this rarely bites — but it is a real liveness risk.
 
 ## MEDIUM
 
-### M1. Sync file I/O on the event loop in state writes
+### M1. Sync file I/O on the event loop in state writes [FIXED]
+
+**Fix:** `handle_post_state` now wraps `load_state`, `save_state`, and
+`write_env_file` in `await asyncio.to_thread(...)`, so file I/O happens
+on a worker thread and the event loop is never blocked even briefly
+mid-stream. Folded with the SEC-006 lock — both fixes share the same
+critical section.
+
+---
+
+### M1-orig. (historical analysis)
 **File:** `src/uam/state.py` lines 21-24, 186-235; called from
 `src/uam/proxy.py` lines 561, 576-578 (`handle_post_state`)
 
@@ -83,7 +93,18 @@ in principle because the *streaming* loop can be paused mid-frame.
 **Recommended fix:** wrap the three calls in
 `await asyncio.to_thread(...)`. Cheap and removes any event-loop blocking.
 
-### M2. Sync RotatingFileHandler I/O from async handlers
+### M2. Sync RotatingFileHandler I/O from async handlers [WONTFIX]
+
+**Decision:** Default log level is `WARNING`, so the only blocking
+writes happen on error paths (already exceptional). At `INFO` and
+`DEBUG` the per-write cost is sub-millisecond on SSD. Migrating to
+`QueueHandler` + `QueueListener` is a non-trivial logging refactor for
+negligible production benefit. Documented under "use DEBUG for
+diagnosis only".
+
+---
+
+### M2-orig. (historical analysis)
 **File:** `src/uam/log.py` lines 32-40; consumers throughout `proxy.py`,
 `translate.py`, `router.py`, `discovery/*`.
 
@@ -106,7 +127,20 @@ briefly.
   `QueueListener` so file I/O happens on a background thread, or
 - Document that `UAM_LOG_LEVEL=DEBUG` is for diagnosis only, not production.
 
-### M3. f-string evaluated even when debug disabled (hot path)
+### M3. f-string evaluated even when debug disabled (hot path) [FIXED]
+
+**Fix:** `proxy.py` `handle_messages()` now uses lazy `%`-formatting
+for the per-request route log:
+```python
+logger.debug("Route: %s -> %s via %s", model, effective_model, route["backend"])
+```
+Verified by `TestLazyLoggerHotPath`. The translate.py debug logs are
+already cheap (one block per content block) and remain f-strings as a
+deferred backlog item.
+
+---
+
+### M3-orig. (historical analysis)
 **File:** `src/uam/proxy.py` line 150
 
 ```python

@@ -256,7 +256,7 @@ def test_write_env_file_permissions(tmp_path):
     state = {"default": "", "aliases": {}, "models": {}}
     write_env_file(state, env_path)
     mode = env_path.stat().st_mode & 0o777
-    assert mode == 0o644
+    assert mode == 0o600  # SEC-007: env.sh is user-only
 
 
 def test_write_env_file_has_header_comment(tmp_path):

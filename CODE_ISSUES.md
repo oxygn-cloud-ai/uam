@@ -114,7 +114,15 @@ src/uam/translate.py:214:        if extract_think_tags:
 
 ---
 
-### H3. Streaming `thinking_delta` collides with `index: 0` text block (acknowledged but not fixed)
+### H3. Streaming `thinking_delta` collides with `index: 0` text block [FIXED]
+
+**Fix:** Streaming `reasoning_content` is now intentionally skipped in
+`openai_stream_to_anthropic_stream()`. The non-streaming
+(`openai_to_anthropic`) path remains the authoritative source for
+reasoning. This avoids the protocol violation (thinking_delta against a
+text block) entirely. Verified by
+`TestStreamingThinkingSkipped::test_reasoning_content_not_emitted_in_streaming`
+and the updated `test_translate_hardened.py::test_stream_reasoning_content_delta`.
 **File:** `src/uam/translate.py:312-326`
 **Severity:** HIGH
 
@@ -139,7 +147,13 @@ The Anthropic streaming protocol requires that `thinking_delta` events only targ
 
 ---
 
-### H4. Multiple `tool_result` blocks: original message's non-tool-result content is dropped if `len(tool_results) == 1`
+### H4. Multiple `tool_result` blocks: non-tool-result content dropped if `len(tool_results) == 1` [FIXED]
+
+**Fix:** The expansion path in `anthropic_to_openai()` now triggers when
+`tool_results and (len(tool_results) > 1 or non_tool)` — i.e. any
+tool_result with companion text is expanded into a separate
+non-tool-result message followed by tool messages. Verified by
+`TestSingleToolResultPreservesText`.
 **File:** `src/uam/translate.py:39-65, 96-166`
 **Severity:** HIGH
 
@@ -188,7 +202,15 @@ Line 68 (the `/api/tags` Ollama branch) was correctly updated to `logger.info(..
 
 ---
 
-### M2. `infer_capabilities` does not strip `runpod:account/pod` two-segment prefix correctly for `meta-llama/Llama-...`
+### M2. `infer_capabilities` missing families (gemma, phi, command, llava, dbrx, yi) [FIXED]
+
+**Fix:** `infer_capabilities()` now recognizes `gemma`, `phi`, `command`,
+`dbrx`, `yi`, `codellama`, `codestral`, `llava` (vision), and `gemma-3`
+(vision). Verified by `TestInferCapabilitiesGaps`.
+
+---
+
+### M2-orig. `infer_capabilities` two-segment prefix corner cases (historical analysis)
 **File:** `src/uam/state.py:149-183`
 **Severity:** MEDIUM
 
@@ -216,7 +238,15 @@ More concretely: any model not starting with one of {claude, gpt-4, gpt-5, gemin
 
 ---
 
-### M3. `infer_capabilities` `gpt-5` startswith check is wrong for openrouter ids
+### M3. `infer_capabilities` `gpt-3.5` falls through to streaming-only [FIXED]
+
+**Fix:** Added explicit `gpt-3` / `gpt3` branch returning
+`["tools", "streaming"]`. Verified by
+`TestInferCapabilitiesGaps::test_gpt_35_has_tools`.
+
+---
+
+### M3-orig. (historical analysis)
 **File:** `src/uam/state.py:165`
 **Severity:** MEDIUM
 
@@ -230,7 +260,14 @@ But the input is post-`rsplit("/", 1)[-1]`, so `openrouter:openai/gpt-5-turbo` �
 
 ---
 
-### M4. `system` text-block dict access uses `b["text"]` instead of `b.get("text", "")`
+### M4. `system` text-block dict access uses `b["text"]` instead of `b.get` [FIXED]
+
+**Fix:** `anthropic_to_openai()` now uses `b.get("text", "")` for system
+text blocks. Verified by `TestSystemBlockNoText`.
+
+---
+
+### M4-orig. (historical analysis)
 **File:** `src/uam/translate.py:29`
 **Severity:** MEDIUM
 
@@ -246,7 +283,15 @@ If a malformed system block is `{"type": "text"}` with no `text` key (Anthropic 
 
 ---
 
-### M5. `write_env_file` writes empty `SUPPORTED_CAPABILITIES=""` when `capabilities` key absent
+### M5. `write_env_file` writes empty `SUPPORTED_CAPABILITIES=""` [FIXED]
+
+**Fix:** `write_env_file()` now falls back to `infer_capabilities(default)`
+when `model_entry.get("capabilities")` is missing or empty. Verified by
+`TestEnvFileEmptyCapsFallback`.
+
+---
+
+### M5-orig. (historical analysis)
 **File:** `src/uam/state.py:223-229`
 **Severity:** MEDIUM
 
@@ -265,7 +310,16 @@ If `model_entry` exists and is enabled but lacks the `capabilities` key (e.g. us
 
 ---
 
-### M6. `_resolve_default_swap` "default disabled" branch is silently a no-op fall-through
+### M6. `_resolve_default_swap` "default disabled" branch silently falls through [FIXED]
+
+**Fix:** When the default model is disabled, `_resolve_default_swap()`
+now logs `logger.warning("Default model %s is disabled — falling
+through to %s", default, model)` so the user has observability.
+Verified by `TestDefaultDisabledLogged`.
+
+---
+
+### M6-orig. (historical analysis)
 **File:** `src/uam/proxy.py:107-115`
 **Severity:** MEDIUM
 
@@ -288,7 +342,14 @@ If the user has set a default but disabled it via `/model`, the proxy silently f
 
 ## LOW
 
-### L1. Logger imports placed after `from ... import` block
+### L1. Logger imports placed after `from ... import` block [FIXED]
+
+**Fix:** `proxy.py` now declares `logger = logging.getLogger("uam.proxy")`
+after all imports. Verified by `TestLoggerImportOrder`.
+
+---
+
+### L1-orig. (historical analysis)
 **File:** `src/uam/proxy.py:9`, `src/uam/router.py:9`, `src/uam/translate.py:8`
 **Severity:** LOW
 
@@ -373,7 +434,17 @@ This is the only retry-after test and it uses lowercase keys, exactly the case t
 
 ---
 
-### L7. `_proxy_with_translation` does not forward `_forward_response_headers` (pre-existing)
+### L7. `_proxy_with_translation` does not forward `_forward_response_headers` [FIXED]
+
+**Fix:** The non-streaming translation path now calls
+`_forward_response_headers(upstream, resp)` after building the
+JSON response, matching the native Anthropic path. `request-id` and
+`anthropic-ratelimit-*` headers from upstream are now visible to
+Claude Code on translated routes.
+
+---
+
+### L7-orig. (historical analysis)
 **File:** `src/uam/proxy.py:219-309`
 **Severity:** LOW (pre-existing, not introduced in these phases)
 

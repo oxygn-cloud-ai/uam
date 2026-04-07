@@ -1,13 +1,13 @@
 """HTTP proxy handlers — Anthropic Messages API pass-through with model swapping."""
 
+import asyncio
 import json
 import logging
+import re
 import time
 
 import aiohttp
 from aiohttp import web
-
-logger = logging.getLogger("uam.proxy")
 
 from uam.log import redact_headers
 from uam.router import ModelRouter
@@ -17,6 +17,36 @@ from uam.translate import (
     openai_to_anthropic,
     openai_stream_to_anthropic_stream,
     make_anthropic_stream_start,
+)
+
+# L1: logger declaration goes after the import block (style nit; isort/ruff
+# previously flagged this).
+logger = logging.getLogger("uam.proxy")
+
+# SEC-006: Serialize all load → mutate → save → write_env_file flows so two
+# concurrent POST /state requests cannot lose updates by interleaving.
+_state_write_lock = asyncio.Lock()
+
+# SEC-002: Allowed Host header values. The proxy only ever listens on
+# localhost; rejecting any other Host blocks DNS-rebinding from a browser
+# tab that has resolved an attacker-controlled hostname to 127.0.0.1.
+_ALLOWED_HOSTS = {
+    "127.0.0.1",
+    "localhost",
+}
+
+# SEC-008: Patterns scrubbed from upstream error messages before they are
+# forwarded to the client. A misbehaving upstream that echoes the request's
+# Authorization / X-Api-Key header in its error body must not leak the user's
+# key back through the proxy.
+_SECRET_HEADER_RE = re.compile(
+    # Match "Authorization: Bearer <token>", "X-Api-Key: <token>",
+    # "Bearer <token>", and similar variants. The trailing token group is
+    # \S+ but we also consume an optional second \S+ so "Authorization:
+    # Bearer sk-..." is fully eaten in one match.
+    r"(authorization|x[-_]api[-_]key)\s*[:=]\s*(?:bearer\s+)?\S+"
+    r"|bearer\s+\S+",
+    re.IGNORECASE,
 )
 
 # State cache — avoid disk I/O on every request
@@ -64,9 +94,28 @@ def _openai_chat_url(route: dict) -> str:
     return f"{base_url}/v1/chat/completions"
 
 
+@web.middleware
+async def host_header_middleware(request: web.Request, handler):
+    """SEC-002: Reject requests whose Host header is not localhost.
+
+    Defends against DNS rebinding attacks where a malicious page in the
+    user's browser binds an attacker-controlled hostname to 127.0.0.1 and
+    POSTs to the proxy. aiohttp's request.host is `Host` header verbatim
+    when present, otherwise the listening socket address.
+    """
+    host = (request.host or "").split(":", 1)[0].lower()
+    if host not in _ALLOWED_HOSTS:
+        return web.json_response(
+            {"error": {"type": "forbidden",
+                       "message": "Host header not allowed"}},
+            status=403,
+        )
+    return await handler(request)
+
+
 def create_app(router: ModelRouter) -> web.Application:
     """Create the aiohttp application with all routes."""
-    app = web.Application()
+    app = web.Application(middlewares=[host_header_middleware])
     app["router"] = router
 
     app.router.add_post("/v1/messages", handle_messages)
@@ -126,8 +175,13 @@ def _resolve_default_swap(router: ModelRouter, model: str) -> tuple[dict | None,
     if default and model.startswith("claude-") and not default.startswith("claude-"):
         # Swap to default model
         if not is_enabled(default, state):
-            # Default is disabled — fall through to normal resolution
-            pass
+            # M6: previously a silent fall-through. Log a warning so the user
+            # has observability that their swap was bypassed.
+            logger.warning(
+                "Default model %s is disabled — falling through to %s",
+                default,
+                model,
+            )
         else:
             route = router.resolve(default)
             if route:
@@ -136,8 +190,12 @@ def _resolve_default_swap(router: ModelRouter, model: str) -> tuple[dict | None,
     # Normal resolution
     route = router.resolve(model)
     if route:
-        # Check if model is enabled (skip check for Claude passthrough)
-        if model in state.get("models", {}) and not is_enabled(model, state):
+        # SEC-003: previously the enabled check was gated on
+        # `model in state.models`, so an unknown model id silently bypassed
+        # on/off enforcement and fell through to the Anthropic default
+        # backend with the user's real key. We now apply the enabled check
+        # to ALL resolved models — known or not.
+        if not is_enabled(model, state):
             return None, model
         return route, model
 
@@ -166,7 +224,9 @@ async def handle_messages(request: web.Request) -> web.StreamResponse:
             headers={"x-should-retry": "false"},
         )
 
-    logger.debug(f"Route: {model} -> {effective_model} via {route['backend']}")
+    # perf M3: lazy %-formatting so f-string interpolation is skipped when
+    # debug is disabled (which is the production default).
+    logger.debug("Route: %s -> %s via %s", model, effective_model, route["backend"])
 
     is_stream = payload.get("stream", False)
 
@@ -229,8 +289,12 @@ async def _proxy_anthropic_native(
                 _forward_response_headers(upstream, resp)
                 return resp
     except Exception as e:
+        # SEC-010: do not leak str(e) — it may contain pod ids, full URLs,
+        # or even auth headers from broken upstreams. Log full detail to
+        # the rotating log file and return a generic message to the client.
+        logger.exception("Upstream proxy error: %s", e)
         return web.json_response(
-            {"error": {"type": "proxy_error", "message": str(e)}},
+            {"error": {"type": "proxy_error", "message": "upstream connection failed"}},
             status=502,
             headers={"x-should-retry": "false"},
         )
@@ -353,22 +417,47 @@ async def _proxy_with_translation(
                 anthropic_resp = openai_to_anthropic(
                     data, effective_model, extract_think_tags=True
                 )
-                return web.json_response(anthropic_resp)
+                resp = web.json_response(anthropic_resp)
+                # L7: forward request-id / anthropic-ratelimit-* / x-* from
+                # upstream so Claude Code sees the same headers it would on
+                # the native Anthropic path.
+                _forward_response_headers(upstream, resp)
+                return resp
     except Exception as e:
+        # SEC-010: do not leak str(e) — it may contain pod ids, full URLs,
+        # or even auth headers from broken upstreams. Log full detail to
+        # the rotating log file and return a generic message to the client.
+        logger.exception("Upstream proxy error: %s", e)
         return web.json_response(
-            {"error": {"type": "proxy_error", "message": str(e)}},
+            {"error": {"type": "proxy_error", "message": "upstream connection failed"}},
             status=502,
             headers={"x-should-retry": "false"},
         )
 
 
+def _scrub_secrets(text: str) -> str:
+    """SEC-008: strip Authorization / X-Api-Key / Bearer tokens from a
+    string before forwarding it to the client. A misbehaving upstream that
+    echoes the request's auth headers in its error body must not leak the
+    user's key back through the proxy."""
+    return _SECRET_HEADER_RE.sub("[redacted]", text)
+
+
 def _make_anthropic_error(error_body: bytes, status: int) -> bytes:
-    """Wrap an upstream error in Anthropic error format."""
+    """Wrap an upstream error in Anthropic error format.
+
+    SEC-008: strips auth headers from the upstream message before forwarding.
+    Truncates long messages to 1 KiB to bound information disclosure.
+    """
     try:
         err = json.loads(error_body)
         msg = err.get("error", {}).get("message", str(err))
     except (json.JSONDecodeError, AttributeError):
         msg = error_body.decode("utf-8", errors="replace")
+
+    msg = _scrub_secrets(msg)
+    if len(msg) > 1024:
+        msg = msg[:1024] + "...[truncated]"
 
     return json.dumps({
         "error": {"type": "api_error", "message": msg}
@@ -475,8 +564,10 @@ async def handle_ask(request: web.Request) -> web.StreamResponse:
                 anthropic_resp = openai_to_anthropic(data, model)
                 return web.json_response(anthropic_resp)
         except Exception as e:
+            # SEC-010: log full detail; return generic message.
+            logger.exception("Upstream proxy error: %s", e)
             return web.json_response(
-                {"error": {"type": "proxy_error", "message": str(e)}},
+                {"error": {"type": "proxy_error", "message": "upstream connection failed"}},
                 status=502,
                 headers={"x-should-retry": "false"},
             )
@@ -499,8 +590,10 @@ async def handle_ask(request: web.Request) -> web.StreamResponse:
                     headers=retry_hdrs,
                 )
         except Exception as e:
+            # SEC-010: log full detail; return generic message.
+            logger.exception("Upstream proxy error: %s", e)
             return web.json_response(
-                {"error": {"type": "proxy_error", "message": str(e)}},
+                {"error": {"type": "proxy_error", "message": "upstream connection failed"}},
                 status=502,
                 headers={"x-should-retry": "false"},
             )
@@ -550,8 +643,12 @@ async def handle_count_tokens(request: web.Request) -> web.Response:
                 headers=retry_hdrs,
             )
     except Exception as e:
+        # SEC-010: do not leak str(e) — it may contain pod ids, full URLs,
+        # or even auth headers from broken upstreams. Log full detail to
+        # the rotating log file and return a generic message to the client.
+        logger.exception("Upstream proxy error: %s", e)
         return web.json_response(
-            {"error": {"type": "proxy_error", "message": str(e)}},
+            {"error": {"type": "proxy_error", "message": "upstream connection failed"}},
             status=502,
             headers={"x-should-retry": "false"},
         )
@@ -620,25 +717,30 @@ async def handle_post_state(request: web.Request) -> web.Response:
             status=400,
         )
 
-    state = load_state()
+    # SEC-006: serialize the load → mutate → save → write_env_file flow
+    # so two concurrent POSTs cannot lose updates by interleaving. Run the
+    # synchronous file I/O in a worker thread (perf M1) so the proxy event
+    # loop is never blocked even briefly mid-stream.
+    async with _state_write_lock:
+        state = await asyncio.to_thread(load_state)
 
-    if "default" in updates:
-        state["default"] = updates["default"]
+        if "default" in updates:
+            state["default"] = updates["default"]
 
-    if "aliases" in updates:
-        state["aliases"].update(updates["aliases"])
+        if "aliases" in updates:
+            state.setdefault("aliases", {}).update(updates["aliases"])
 
-    if "models" in updates:
-        for model_id, model_state in updates["models"].items():
-            if model_id in state.get("models", {}):
-                state["models"][model_id].update(model_state)
-            else:
-                state["models"][model_id] = model_state
+        if "models" in updates:
+            for model_id, model_state in updates["models"].items():
+                if model_id in state.get("models", {}):
+                    state["models"][model_id].update(model_state)
+                else:
+                    state.setdefault("models", {})[model_id] = model_state
 
-    save_state(state)
-    try:
-        write_env_file(state)
-    except OSError as e:
-        logger.warning(f"Failed to write env file: {e}")
-    _invalidate_state_cache()
+        await asyncio.to_thread(save_state, state)
+        try:
+            await asyncio.to_thread(write_env_file, state)
+        except OSError as e:
+            logger.warning("Failed to write env file: %s", e)
+        _invalidate_state_cache()
     return web.json_response({"status": "ok", "state": state})

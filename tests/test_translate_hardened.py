@@ -353,7 +353,9 @@ class TestThinkTagExtraction:
 class TestStreamingThinking:
 
     def test_stream_reasoning_content_delta(self):
-        """delta with reasoning_content → thinking_delta or documented skip."""
+        """H3: streaming reasoning_content is intentionally skipped to avoid
+        a thinking_delta on the text content block (protocol violation).
+        Non-streaming path is the authoritative source."""
         line = json.dumps({
             "choices": [{
                 "delta": {"reasoning_content": "Let me think..."},
@@ -362,11 +364,8 @@ class TestStreamingThinking:
         }).encode()
         line = b"data: " + line
         result = openai_stream_to_anthropic_stream(line, "m")
-        # Should produce some output (either thinking_delta or text with marker)
-        assert result is not None
-        text = result.decode()
-        # Should contain the reasoning content in some form
-        assert "think" in text.lower() or "Let me think" in text
+        # Per H3 fix: no output for reasoning_content alone in streaming.
+        assert result is None or b"thinking_delta" not in result
 
     def test_stream_reasoning_content_empty(self):
         """Empty reasoning_content in delta → skip."""

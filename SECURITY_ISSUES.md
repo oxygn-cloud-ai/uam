@@ -59,7 +59,14 @@ by the same POST) and `caps_str` (joined from `capabilities` list values).
 
 ---
 
-### SEC-002 — `/state` POST is unauthenticated; no Host header check (DNS rebinding) [OPEN]
+### SEC-002 — `/state` POST is unauthenticated; no Host header check (DNS rebinding) [PARTIAL FIX]
+
+**Fix:** Added `host_header_middleware` in `proxy.py` that rejects any
+request whose `Host` header is not `127.0.0.1` or `localhost` (any port).
+Verified by `TestHostHeaderValidation` (rejects external host, accepts
+localhost / 127.0.0.1, rejects POST /state with external host). Adding
+a real auth token is left as a follow-up — the host check alone closes
+the DNS-rebinding browser vector, which was the most exploitable angle.
 
 **File:** `src/uam/proxy.py:544-582`, `src/uam/__main__.py`
 
@@ -87,7 +94,13 @@ or CORS preflight enforcement.
 
 ## HIGH
 
-### SEC-003 — Model on/off enforcement bypass via unknown Claude-passthrough names [OPEN]
+### SEC-003 — Model on/off enforcement bypass via unknown Claude-passthrough names [FIXED]
+
+**Fix:** `_resolve_default_swap()` now applies `is_enabled()` to the
+resolved model unconditionally — including the case where `router.resolve()`
+synthesized an Anthropic fallback route for an unknown model id. Unknown
+models that aren't explicitly enabled in state are rejected with 400.
+Verified by `TestUnknownModelBypass`.
 
 **File:** `src/uam/proxy.py:118-125`, `src/uam/router.py:86-96`
 
@@ -170,7 +183,15 @@ interleave their writes and corrupt the file even without a crash.
 
 ---
 
-### SEC-006 — Race condition on concurrent `/state` POSTs [OPEN]
+### SEC-006 — Race condition on concurrent `/state` POSTs [FIXED]
+
+**Fix:** Added module-level `_state_write_lock = asyncio.Lock()` in
+`proxy.py`. `handle_post_state` acquires it across the load → mutate →
+save → write_env_file → invalidate flow, so two concurrent POSTs cannot
+interleave. Verified by `TestStatePostLock` (two parallel POSTs both
+land in the final state). Folded with perf M1 — the file I/O is now
+also dispatched via `asyncio.to_thread()` so the event loop is not
+blocked while the lock is held.
 
 **File:** `src/uam/proxy.py:544-582`, `src/uam/state.py:11-24`
 
@@ -193,7 +214,12 @@ load → mutate → save → write_env_file. Combine with atomic write (SEC-005)
 
 ## MEDIUM
 
-### SEC-007 — `~/.uam/env.sh` chmod 0o644 — world/group readable [OPEN]
+### SEC-007 — `~/.uam/env.sh` chmod 0o644 — world/group readable [FIXED]
+
+**Fix:** `write_env_file()` now `chmod(0o600)` so the file is
+user-only-readable. Verified by `TestEnvFilePerms`. The existing
+`tests/test_capabilities.py::test_write_env_file_permissions` was
+updated from 0o644 to 0o600.
 
 **File:** `src/uam/state.py:235`
 
@@ -216,7 +242,14 @@ disclosure. However:
 
 ---
 
-### SEC-008 — Upstream error bodies forwarded verbatim may leak internals [OPEN]
+### SEC-008 — Upstream error bodies forwarded verbatim may leak internals [FIXED]
+
+**Fix:** Added `_scrub_secrets()` helper that strips
+`Authorization: Bearer ...`, `X-Api-Key: ...`, and bare `Bearer <token>`
+sequences from any upstream error message. `_make_anthropic_error()`
+runs the message through the scrubber and truncates to 1 KiB before
+forwarding. Verified by `TestErrorSanitization` (Authorization and
+X-Api-Key both stripped).
 
 **File:** `src/uam/proxy.py:318-328`, `src/uam/proxy.py:262-267`,
 `src/uam/proxy.py:406-413`
@@ -235,7 +268,12 @@ forwarding. Log the original upstream error to file only.
 
 ---
 
-### SEC-009 — `discover_runpod` GraphQL POST has no per-request timeout [OPEN]
+### SEC-009 — `discover_runpod` GraphQL POST has no per-request timeout [FIXED]
+
+**Fix:** GraphQL POST now passes `timeout=aiohttp.ClientTimeout(total=15)`
+explicitly. A wedged RunPod API can no longer stall discovery for the
+session-level 600s. Verified by
+`TestRunpodGraphqlTimeout::test_graphql_post_has_timeout`.
 
 **File:** `src/uam/discovery/runpod.py:28-35`
 
@@ -252,7 +290,15 @@ openrouter (15s) and local probe (5s).
 
 ---
 
-### SEC-010 — `_proxy_anthropic_native` exception handler leaks `str(e)` [OPEN]
+### SEC-010 — `_proxy_anthropic_native` exception handler leaks `str(e)` [FIXED]
+
+**Fix:** All five `except Exception as e: ... proxy_error: str(e)`
+sites in `proxy.py` (native messages, translated messages, ask
+translated, ask native, count_tokens) now return a generic
+`"upstream connection failed"` to the client and call
+`logger.exception("Upstream proxy error: %s", e)` so the full exception
++ traceback are captured in `~/.uam/uam.log`. Verified by
+`TestProxyErrorGeneric` (pod id and vllm key never appear in body).
 
 **File:** `src/uam/proxy.py:211-216`, `src/uam/proxy.py:310-315`,
 `src/uam/proxy.py:417-422`, `src/uam/proxy.py:440-445`, `src/uam/proxy.py:490-495`
@@ -272,7 +318,12 @@ Use the `logger.exception(...)` pattern so stack traces are captured.
 
 ## LOW
 
-### SEC-011 — `_extract_alias` / `infer_capabilities` unbounded model-id input [LOW] [OPEN]
+### SEC-011 — `_extract_alias` / `infer_capabilities` unbounded model-id input [LOW] [FIXED]
+
+**Fix:** `state.MAX_MODEL_ID_LEN = 512`. `sync_state_with_routes()`
+filters route_keys longer than this and logs a warning. A compromised
+upstream can no longer force O(n) regex/scan work with a multi-MB id.
+Verified by `TestModelIdLengthLimit`.
 
 **File:** `src/uam/state.py:90-183`
 
@@ -290,7 +341,12 @@ discovery boundary.
 
 ---
 
-### SEC-012 — `load_state` swallows JSON / OSError silently [OPEN]
+### SEC-012 — `load_state` swallows JSON / OSError silently [FIXED]
+
+**Fix:** `load_state()` now logs at ERROR level via the new
+`uam.state` logger when `JSONDecodeError`/`OSError` is caught (the
+defaults are still returned, so existing callers see no behavior
+change). Verified by `TestLoadStateLogsError`.
 
 **File:** `src/uam/state.py:11-18`
 
