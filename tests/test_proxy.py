@@ -1214,3 +1214,137 @@ async def test_count_tokens_malformed_json(app_client):
     assert resp.status == 400
     data = await resp.json()
     assert data["error"]["type"] == "invalid_request_error"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Retry signaling — _retry_headers + integration
+# ---------------------------------------------------------------------------
+
+
+from uam.proxy import _retry_headers
+
+
+def test_retry_headers_503():
+    """503 Service Unavailable returns x-should-retry: true."""
+    headers = _retry_headers(503)
+    assert headers["x-should-retry"] == "true"
+
+
+def test_retry_headers_429():
+    """429 Too Many Requests returns x-should-retry: true."""
+    headers = _retry_headers(429)
+    assert headers["x-should-retry"] == "true"
+
+
+def test_retry_headers_429_with_retry_after():
+    """429 with upstream retry-after-ms forwards the value."""
+    upstream = {"retry-after-ms": "5000", "retry-after": "5"}
+    headers = _retry_headers(429, upstream)
+    assert headers["x-should-retry"] == "true"
+    assert headers["retry-after-ms"] == "5000"
+    assert headers["retry-after"] == "5"
+
+
+def test_retry_headers_400():
+    """400 Bad Request returns x-should-retry: false."""
+    headers = _retry_headers(400)
+    assert headers["x-should-retry"] == "false"
+
+
+def test_retry_headers_401():
+    """401 Unauthorized returns x-should-retry: false."""
+    headers = _retry_headers(401)
+    assert headers["x-should-retry"] == "false"
+
+
+def test_retry_headers_404():
+    """404 Not Found returns x-should-retry: false."""
+    headers = _retry_headers(404)
+    assert headers["x-should-retry"] == "false"
+
+
+def test_retry_headers_200():
+    """200 OK returns empty dict (no retry headers for success)."""
+    headers = _retry_headers(200)
+    assert headers == {}
+
+
+async def test_messages_upstream_503_has_retry_header(app_client):
+    """POST /v1/messages with upstream 503 includes x-should-retry: true."""
+    save_state({
+        "default": "claude-sonnet-4-6",
+        "aliases": {},
+        "models": {"claude-sonnet-4-6": {"enabled": True}},
+    })
+    with _mock_upstream(app_client) as m:
+        m.post(
+            "https://api.anthropic.com/v1/messages",
+            body=b'{"error":{"type":"overloaded_error","message":"Overloaded"}}',
+            status=503,
+            content_type="application/json",
+        )
+        resp = await app_client.post(
+            "/v1/messages",
+            data=json.dumps({
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status == 503
+    assert resp.headers.get("x-should-retry") == "true"
+
+
+async def test_messages_upstream_400_has_no_retry_header(app_client):
+    """POST /v1/messages with upstream 400 includes x-should-retry: false."""
+    save_state({
+        "default": "claude-sonnet-4-6",
+        "aliases": {},
+        "models": {"claude-sonnet-4-6": {"enabled": True}},
+    })
+    with _mock_upstream(app_client) as m:
+        m.post(
+            "https://api.anthropic.com/v1/messages",
+            body=b'{"error":{"type":"invalid_request_error","message":"bad"}}',
+            status=400,
+            content_type="application/json",
+        )
+        resp = await app_client.post(
+            "/v1/messages",
+            data=json.dumps({
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status == 400
+    assert resp.headers.get("x-should-retry") == "false"
+
+
+async def test_ask_upstream_error_has_retry_headers(app_client):
+    """Ask endpoint with upstream 503 includes x-should-retry: true."""
+    save_state({
+        "default": "",
+        "aliases": {},
+        "models": {"claude-sonnet-4-6": {"enabled": True}},
+    })
+    with _mock_upstream(app_client) as m:
+        m.post(
+            "https://api.anthropic.com/v1/messages",
+            body=b'{"error":{"type":"overloaded_error","message":"Overloaded"}}',
+            status=503,
+            content_type="application/json",
+        )
+        resp = await app_client.post(
+            "/v1/messages/ask",
+            data=json.dumps({
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 100,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status == 503
+    assert resp.headers.get("x-should-retry") == "true"
