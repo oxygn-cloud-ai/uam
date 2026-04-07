@@ -57,6 +57,10 @@ async def _probe_server(
                 endpoint,
                 timeout=aiohttp.ClientTimeout(total=5),
             ) as resp:
+                # Only treat 2xx as a successful endpoint. 4xx/5xx means
+                # this server doesn't speak this API — try the next path.
+                if resp.status >= 400:
+                    continue
                 try:
                     data = await resp.json()
                 except (json.JSONDecodeError, aiohttp.ContentTypeError, ValueError) as e:
