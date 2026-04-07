@@ -89,7 +89,7 @@ class TestApiFormatDiscovery:
                 routes = await discover_local(config, session)
         assert routes["local:vllm-model"]["api_format"] == "openai"
 
-    def test_anthropic_routes_have_api_format(self):
+    async def test_anthropic_routes_have_api_format(self):
         """Anthropic discovery routes have api_format: 'anthropic'."""
         config = {
             "anthropic": {
@@ -207,6 +207,8 @@ class TestApiFormatProxy:
     @pytest.mark.asyncio
     async def test_native_local_passthrough(self, aiohttp_client):
         """Local route with api_format 'anthropic' uses _proxy_anthropic_native path."""
+        from uam.config import default_config
+
         # Set up routes with a local model that has api_format: anthropic
         routes = {
             "local:claude-local": {
@@ -224,14 +226,14 @@ class TestApiFormatProxy:
             "models": {"local:claude-local": {"enabled": True}},
         })
 
-        async with aiohttp.ClientSession() as session:
-            router = ModelRouter.__new__(ModelRouter)
-            router.routes = routes
-            router.session = session
-
+        router = ModelRouter(default_config())
+        router.routes = routes
+        router.session = aiohttp.ClientSession()
+        try:
             app = create_app(router)
+            client = await aiohttp_client(app)
 
-            # Mock upstream Anthropic-format response
+            # Mock upstream Anthropic-format response, passing through test client URL
             upstream_response = {
                 "id": "msg_123",
                 "type": "message",
@@ -242,14 +244,14 @@ class TestApiFormatProxy:
                 "usage": {"input_tokens": 10, "output_tokens": 5},
             }
 
-            with aioresponses_ctx() as mocked:
+            base = str(client.make_url("")).rstrip("/")
+            with aioresponses_ctx(passthrough=[base]) as mocked:
                 # The native path posts to {url}/v1/messages
                 mocked.post(
                     "http://localhost:9999/v1/messages",
                     payload=upstream_response,
                 )
 
-                client = await aiohttp_client(app)
                 resp = await client.post(
                     "/v1/messages",
                     json={
@@ -264,3 +266,5 @@ class TestApiFormatProxy:
                 # Should get the upstream response directly (no translation)
                 assert data["content"][0]["text"] == "Hello from local anthropic"
                 assert data["type"] == "message"
+        finally:
+            await router.session.close()

@@ -36,6 +36,7 @@ async def discover_openrouter(config: dict, session: aiohttp.ClientSession) -> d
                 "url": url,
                 "api_key": api_key,
                 "original_model": model_id,
+                "api_format": "openai",
             }
         logger.info(f"[openrouter] discovered {len(routes)} models")
     except Exception as e:

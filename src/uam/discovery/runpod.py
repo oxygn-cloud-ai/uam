@@ -92,6 +92,7 @@ async def discover_runpod(config: dict, session: aiohttp.ClientSession) -> dict[
                             "url": proxy_url,
                             "api_key": vllm_key,
                             "original_model": model_id,
+                            "api_format": "openai",
                         }
                         logger.info(f"[runpod:{account_name}] {route_key}")
                 except Exception as e:

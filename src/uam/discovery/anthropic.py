@@ -29,6 +29,7 @@ def discover_anthropic(config: dict) -> dict[str, dict]:
             "url": url,
             "api_key": api_key,
             "original_model": model,
+            "api_format": "anthropic",
         }
     for alias, target in ALIASES.items():
         if target in routes:

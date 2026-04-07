@@ -12,28 +12,37 @@ async def discover_local(config: dict, session: aiohttp.ClientSession) -> dict[s
     local_config = config.get("local", {})
     routes = {}
 
-    # Build list of base URLs to probe
-    urls_to_probe: list[str] = []
+    # Build list of (base_url, api_format) to probe
+    urls_to_probe: list[tuple[str, str]] = []
 
-    # Localhost port probing
+    # Localhost port probing — always openai format
     for port in local_config.get("probe_ports", []):
-        urls_to_probe.append(f"http://127.0.0.1:{port}")
+        urls_to_probe.append((f"http://127.0.0.1:{port}", "openai"))
 
     # Explicit servers (remote Ollama, vLLM, etc.)
     for server in local_config.get("servers", []):
-        url = server if isinstance(server, str) else server.get("url", "")
+        if isinstance(server, str):
+            url = server
+            api_format = "openai"
+        else:
+            url = server.get("url", "")
+            api_format = server.get("api_format", "openai")
         if url:
-            urls_to_probe.append(url.rstrip("/"))
+            urls_to_probe.append((url.rstrip("/"), api_format))
 
-    for url in urls_to_probe:
+    for url, api_format in urls_to_probe:
         label = url.replace("http://", "").replace("https://", "")
-        await _probe_server(url, label, routes, session)
+        await _probe_server(url, label, routes, session, api_format)
 
     return routes
 
 
 async def _probe_server(
-    url: str, label: str, routes: dict, session: aiohttp.ClientSession
+    url: str,
+    label: str,
+    routes: dict,
+    session: aiohttp.ClientSession,
+    api_format: str = "openai",
 ) -> None:
     """Probe a single server URL for models."""
     for path in ["/v1/models", "/api/tags"]:
@@ -54,6 +63,7 @@ async def _probe_server(
                             "url": url,
                             "api_key": "",
                             "original_model": model_id,
+                            "api_format": api_format,
                         }
                         logger.info(f"[local:{label}] {route_key}")
             else:
@@ -65,6 +75,7 @@ async def _probe_server(
                         "url": url,
                         "api_key": "",
                         "original_model": model_id,
+                        "api_format": api_format,
                     }
                     print(f"  [local:{label}] {route_key}")
             break  # Found models on this server
