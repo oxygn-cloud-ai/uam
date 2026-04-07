@@ -12,6 +12,7 @@ from aiohttp import web
 from uam.log import redact_headers
 from uam.router import ModelRouter
 from uam.state import load_state, save_state, is_enabled, get_default, write_env_file
+from uam.token import get_or_create_token, request_is_authenticated
 from uam.translate import (
     anthropic_to_openai,
     openai_to_anthropic,
@@ -133,9 +134,43 @@ async def host_header_middleware(request: web.Request, handler):
     return await handler(request)
 
 
+# SEC-002: Endpoints that mutate persistent state and therefore require
+# auth (token OR provably-non-browser request). GET endpoints are read-only
+# and POST /v1/messages* is called by Claude Code which doesn't know the
+# token, so they remain protected only by host_header_middleware.
+_AUTH_REQUIRED_ENDPOINTS = {
+    ("POST", "/state"),
+    ("POST", "/refresh"),
+}
+
+
+@web.middleware
+async def auth_middleware(request: web.Request, handler):
+    """SEC-002: Require auth on POST /state and POST /refresh.
+
+    Browsers always send an `Origin` header on cross-origin requests,
+    so a request that has no Origin and a localhost Host (already
+    enforced by host_header_middleware) cannot have come from a
+    browser tab. CLI clients (Claude Code hooks, curl) pass through
+    unauthenticated. A bearer token is the alternative path for
+    legitimate browser-based UIs.
+    """
+    if (request.method, request.rel_url.path) not in _AUTH_REQUIRED_ENDPOINTS:
+        return await handler(request)
+
+    expected = get_or_create_token()
+    if not request_is_authenticated(request.headers, expected):
+        return web.json_response(
+            {"error": {"type": "unauthorized",
+                       "message": "Authentication required for this endpoint"}},
+            status=401,
+        )
+    return await handler(request)
+
+
 def create_app(router: ModelRouter) -> web.Application:
     """Create the aiohttp application with all routes."""
-    app = web.Application(middlewares=[host_header_middleware])
+    app = web.Application(middlewares=[host_header_middleware, auth_middleware])
     app["router"] = router
 
     app.router.add_post("/v1/messages", handle_messages)

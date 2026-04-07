@@ -552,3 +552,137 @@ class TestLazyLoggerHotPath:
                 assert 'f"' not in line and "f'" not in line, (
                     f"Hot-path log line should be lazy: {line.strip()}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# SEC-002 (Issue #2): Token auth on mutating endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestAuthMiddleware:
+    """POST /state and POST /refresh require auth (token or no-Origin)."""
+
+    @pytest.fixture
+    def isolated_token(self, tmp_path, monkeypatch):
+        """Point the token module at a tmp_path file and clear its cache."""
+        import uam.token as token_mod
+
+        token_file = tmp_path / "token"
+        monkeypatch.setattr(token_mod, "TOKEN_PATH", token_file)
+        token_mod.reset_cache()
+        yield token_mod
+        token_mod.reset_cache()
+
+    @pytest.fixture
+    async def auth_client(self, aiohttp_client, basic_router, isolated_token):
+        basic_router.session = aiohttp.ClientSession()
+        app = create_app(basic_router)
+        client = await aiohttp_client(app)
+        yield client
+        await basic_router.session.close()
+
+    @pytest.mark.asyncio
+    async def test_post_state_without_origin_allowed(self, auth_client):
+        """CLI-style request (no Origin header) passes auth_middleware."""
+        resp = await auth_client.post(
+            "/state",
+            data=json.dumps({"default": "claude-sonnet-4-6"}),
+            headers={"Content-Type": "application/json"},
+        )
+        # Should not be 401 — no Origin means not a browser.
+        assert resp.status != 401
+
+    @pytest.mark.asyncio
+    async def test_post_state_with_origin_and_no_token_rejected(self, auth_client):
+        """Browser-style request (Origin present, no token) is 401."""
+        resp = await auth_client.post(
+            "/state",
+            data=json.dumps({"default": "claude-sonnet-4-6"}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://evil.example.com",
+            },
+        )
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_post_state_with_origin_and_valid_token_allowed(
+        self, auth_client, isolated_token
+    ):
+        """Origin-bearing request with valid token is allowed."""
+        token = isolated_token.get_or_create_token()
+        resp = await auth_client.post(
+            "/state",
+            data=json.dumps({"default": "claude-sonnet-4-6"}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://app.example.com",
+                "Authorization": f"Bearer {token}",
+            },
+        )
+        assert resp.status != 401
+
+    @pytest.mark.asyncio
+    async def test_post_state_with_origin_and_wrong_token_rejected(
+        self, auth_client, isolated_token
+    ):
+        """Origin-bearing request with wrong token is 401."""
+        isolated_token.get_or_create_token()  # ensure real token exists
+        resp = await auth_client.post(
+            "/state",
+            data=json.dumps({"default": "claude-sonnet-4-6"}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://app.example.com",
+                "Authorization": "Bearer wrong-token-value",
+            },
+        )
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_get_state_does_not_require_auth(self, auth_client):
+        """GET /state is read-only and unauthenticated."""
+        resp = await auth_client.get(
+            "/state",
+            headers={"Origin": "http://app.example.com"},
+        )
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_post_messages_does_not_require_auth(self, auth_client):
+        """POST /v1/messages (Claude Code's hot path) must not require auth."""
+        # An Origin-bearing POST to /v1/messages should pass auth middleware.
+        # We expect a 4xx/5xx from the handler (no real upstream), but not 401.
+        resp = await auth_client.post(
+            "/v1/messages",
+            data=json.dumps({"model": "claude-sonnet-4-6", "messages": []}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://localhost:3000",
+            },
+        )
+        assert resp.status != 401
+
+    def test_token_file_has_600_perms(self, tmp_path, monkeypatch):
+        """Token file must be owner-read-only (0o600)."""
+        import uam.token as token_mod
+
+        token_file = tmp_path / "token"
+        monkeypatch.setattr(token_mod, "TOKEN_PATH", token_file)
+        token_mod.reset_cache()
+        token_mod.get_or_create_token()
+
+        mode = stat.S_IMODE(token_file.stat().st_mode)
+        assert mode == 0o600, f"token file mode is {oct(mode)}"
+        token_mod.reset_cache()
+
+    def test_token_is_64_hex_chars(self, tmp_path, monkeypatch):
+        import uam.token as token_mod
+
+        token_file = tmp_path / "token"
+        monkeypatch.setattr(token_mod, "TOKEN_PATH", token_file)
+        token_mod.reset_cache()
+        token = token_mod.get_or_create_token()
+        assert len(token) == 64
+        assert all(c in "0123456789abcdef" for c in token)
+        token_mod.reset_cache()
