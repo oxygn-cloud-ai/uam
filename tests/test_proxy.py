@@ -1264,8 +1264,13 @@ def test_retry_headers_429():
 
 
 def test_retry_headers_429_with_retry_after():
-    """429 with upstream retry-after-ms forwards the value."""
-    upstream = {"retry-after-ms": "5000", "retry-after": "5"}
+    """429 with upstream Retry-After (canonical case) forwards the value.
+
+    Real servers emit the canonical 'Retry-After' / 'Retry-After-Ms' form.
+    This test uses canonical case so a case-sensitivity regression in
+    _retry_headers (C1 fix) would be caught.
+    """
+    upstream = {"Retry-After-Ms": "5000", "Retry-After": "5"}
     headers = _retry_headers(429, upstream)
     assert headers["x-should-retry"] == "true"
     assert headers["retry-after-ms"] == "5000"
