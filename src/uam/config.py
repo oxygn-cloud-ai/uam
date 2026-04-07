@@ -23,15 +23,34 @@ def default_config() -> dict:
         "anthropic": {
             "url": "https://api.anthropic.com",
             "api_key_env": "ANTHROPIC_API_KEY_REAL",
+            "timeout": 600,
         },
-        "runpod": {"accounts": {}},
+        "runpod": {"accounts": {}, "timeout": 300},
         "openrouter": {
             "url": "https://openrouter.ai/api",
             "api_key_env": "OPENROUTER_API_KEY",
+            "timeout": 300,
         },
-        "local": {"probe_ports": [11434, 8000, 8080, 2242, 5000, 3000], "servers": []},
+        "local": {"probe_ports": [11434, 8000, 8080, 2242, 5000, 3000], "servers": [], "timeout": 120},
         "default_backend": "anthropic",
     }
+
+
+# Default timeout per backend (seconds), used as fallback
+_DEFAULT_TIMEOUTS = {
+    "anthropic": 600,
+    "runpod": 300,
+    "openrouter": 300,
+    "local": 120,
+}
+
+
+def get_backend_timeout(config: dict, backend: str) -> int:
+    """Return the timeout (seconds) for a backend, with sensible defaults."""
+    backend_cfg = config.get(backend, {})
+    if isinstance(backend_cfg, dict) and "timeout" in backend_cfg:
+        return int(backend_cfg["timeout"])
+    return _DEFAULT_TIMEOUTS.get(backend, 300)
 
 
 def resolve_key(env_var_name: str) -> str:

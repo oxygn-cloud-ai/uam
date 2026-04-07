@@ -1,8 +1,12 @@
 """OpenRouter discovery — fetches available models from OpenRouter API."""
 
+import logging
+
 import aiohttp
 
 from uam.config import resolve_key
+
+logger = logging.getLogger("uam.discovery.openrouter")
 
 
 async def discover_openrouter(config: dict, session: aiohttp.ClientSession) -> dict[str, dict]:
@@ -10,7 +14,7 @@ async def discover_openrouter(config: dict, session: aiohttp.ClientSession) -> d
     or_config = config.get("openrouter", {})
     api_key = resolve_key(or_config.get("api_key_env", ""))
     if not api_key:
-        print("  [openrouter] no API key in env, skipping")
+        logger.warning("[openrouter] no API key in env, skipping")
         return {}
 
     url = or_config.get("url", "https://openrouter.ai/api")
@@ -33,8 +37,8 @@ async def discover_openrouter(config: dict, session: aiohttp.ClientSession) -> d
                 "api_key": api_key,
                 "original_model": model_id,
             }
-        print(f"  [openrouter] discovered {len(routes)} models")
+        logger.info(f"[openrouter] discovered {len(routes)} models")
     except Exception as e:
-        print(f"  [openrouter] discovery error: {e}")
+        logger.error(f"[openrouter] discovery error: {e}")
 
     return routes

@@ -1,10 +1,13 @@
 """RunPod discovery — finds running vLLM pods via GraphQL API."""
 
+import logging
 import re
 
 import aiohttp
 
 from uam.config import resolve_key
+
+logger = logging.getLogger("uam.discovery.runpod")
 
 RUNPOD_GRAPHQL = "https://api.runpod.io/graphql"
 PODS_QUERY = '{"query":"{ myself { pods { id name desiredStatus ports imageName env } } }"}'
@@ -18,7 +21,7 @@ async def discover_runpod(config: dict, session: aiohttp.ClientSession) -> dict[
     for account_name, account in rp_config.get("accounts", {}).items():
         api_key = resolve_key(account.get("api_key_env", ""))
         if not api_key:
-            print(f"  [runpod:{account_name}] no API key in env, skipping")
+            logger.warning(f"[runpod:{account_name}] no API key in env, skipping")
             continue
 
         try:
@@ -90,11 +93,11 @@ async def discover_runpod(config: dict, session: aiohttp.ClientSession) -> dict[
                             "api_key": vllm_key,
                             "original_model": model_id,
                         }
-                        print(f"  [runpod:{account_name}] {route_key}")
+                        logger.info(f"[runpod:{account_name}] {route_key}")
                 except Exception as e:
-                    print(f"  [runpod:{account_name}] failed to probe {pod_name}: {e}")
+                    logger.error(f"[runpod:{account_name}] failed to probe {pod_name}: {e}")
 
         except Exception as e:
-            print(f"  [runpod:{account_name}] discovery error: {e}")
+            logger.error(f"[runpod:{account_name}] discovery error: {e}")
 
     return routes

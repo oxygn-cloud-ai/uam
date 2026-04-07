@@ -1,9 +1,12 @@
 """HTTP proxy handlers — Anthropic Messages API pass-through with model swapping."""
 
 import json
+import logging
 import time
 
 from aiohttp import web
+
+logger = logging.getLogger("uam.proxy")
 
 from uam.router import ModelRouter
 from uam.state import load_state, save_state, is_enabled, get_default
@@ -139,7 +142,10 @@ async def handle_messages(request: web.Request) -> web.StreamResponse:
             {"error": {"type": "invalid_request_error",
                        "message": f"Unknown or disabled model: {model}"}},
             status=400,
+            headers={"x-should-retry": "false"},
         )
+
+    logger.debug(f"Route: {model} -> {effective_model} via {route['backend']}")
 
     is_stream = payload.get("stream", False)
 
@@ -213,7 +219,15 @@ async def _proxy_with_translation(
 ) -> web.StreamResponse:
     """Forward request to OpenAI-compatible backend with format translation."""
     # Translate request
-    openai_payload = anthropic_to_openai(payload)
+    try:
+        openai_payload = anthropic_to_openai(payload)
+    except Exception as e:
+        logger.error(f"Translation error: {e}")
+        return web.json_response(
+            {"error": {"type": "translation_error", "message": str(e)}},
+            status=502,
+            headers={"x-should-retry": "false"},
+        )
     openai_payload["model"] = route["original_model"]
     openai_payload["stream"] = is_stream
 

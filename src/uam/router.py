@@ -1,8 +1,11 @@
 """Model router — discovery orchestration and model resolution."""
 
 import asyncio
+import logging
 
 import aiohttp
+
+logger = logging.getLogger("uam.router")
 
 from uam.config import resolve_key
 from uam.discovery.anthropic import ALIASES as ANTHROPIC_ALIASES
@@ -20,6 +23,7 @@ class ModelRouter:
         self.session: aiohttp.ClientSession | None = None
 
     async def start(self, skip_discovery: bool = False):
+        logger.info("Starting model discovery...")
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=600, connect=10)
         )
@@ -31,6 +35,7 @@ class ModelRouter:
 
         # Sync state with discovered routes
         self._sync_state()
+        logger.info(f"{self.model_count()} models available")
 
     async def stop(self):
         if self.session:
@@ -51,7 +56,7 @@ class ModelRouter:
             if isinstance(result, dict):
                 self.routes.update(result)
             elif isinstance(result, Exception):
-                print(f"  Discovery error: {result}")
+                logger.error(f"Discovery error: {result}")
 
     async def refresh(self):
         """Clear non-Anthropic routes and re-discover."""

@@ -1,5 +1,6 @@
 """Minimal proxy server entry point — no CLI, no argparse."""
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -7,13 +8,17 @@ from pathlib import Path
 from aiohttp import web
 
 from uam.config import get_config, parse_listen, CONFIG_DIR
+from uam.log import setup_logging
 from uam.proxy import create_app
 from uam.router import ModelRouter
 
 PID_FILE = CONFIG_DIR / "uam.pid"
 
+logger = logging.getLogger("uam")
+
 
 def main():
+    setup_logging()
     config = get_config()
     host, port = parse_listen(config)
     skip_discovery = "--skip-discovery" in sys.argv

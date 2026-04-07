@@ -1,6 +1,10 @@
 """Local model discovery — probes localhost ports for Ollama, vLLM, etc."""
 
+import logging
+
 import aiohttp
+
+logger = logging.getLogger("uam.discovery.local")
 
 
 async def discover_local(config: dict, session: aiohttp.ClientSession) -> dict[str, dict]:
@@ -51,7 +55,7 @@ async def _probe_server(
                             "api_key": "",
                             "original_model": model_id,
                         }
-                        print(f"  [local:{label}] {route_key}")
+                        logger.info(f"[local:{label}] {route_key}")
             else:
                 for m in data.get("data", []):
                     model_id = m["id"]
