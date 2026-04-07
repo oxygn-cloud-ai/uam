@@ -676,11 +676,11 @@ async def handle_models(request: web.Request) -> web.Response:
 
 async def handle_refresh(request: web.Request) -> web.Response:
     router: ModelRouter = request.app["router"]
-    print("\nRefreshing model discovery...")
+    logger.info("Refreshing model discovery...")
     await router.refresh()
     _invalidate_state_cache()
     count = router.model_count()
-    print(f"Discovery complete: {count} models available\n")
+    logger.info("Discovery complete: %d models available", count)
     return web.json_response({"status": "ok", "models": count})
 
 
