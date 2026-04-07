@@ -168,7 +168,7 @@ pip install -e .
 Then in Claude Code:
 
 1. Run `/uam setup` and follow the prompts
-2. Add your API keys to `~/.zshrc` or `~/.bashrc` (see [API Keys](#api-keys))
+2. Add your API keys to `~/.zshrc` or `~/.bashrc` (see [API Keys](#3-api-keys))
 3. Restart your terminal
 4. Start a new Claude Code session — the proxy auto-starts via SessionStart hook
 5. Run `/model` to see discovered models, toggle them on/off, set a default
