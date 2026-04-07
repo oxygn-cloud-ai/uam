@@ -171,8 +171,10 @@ def test_on_shutdown_pid_not_exists(default_config, monkeypatch, tmp_uam_dir):
     assert not pid_file.exists()
 
 
-def test_on_startup_prints_model_list(default_config, monkeypatch, tmp_uam_dir, capsys):
-    """on_startup prints each discovered model."""
+def test_on_startup_prints_model_list(default_config, monkeypatch, tmp_uam_dir, caplog):
+    """on_startup logs each discovered model."""
+    import logging
+    monkeypatch.setenv("UAM_LOG_LEVEL", "INFO")
     monkeypatch.setattr(sys, "argv", ["uam"])
 
     async def mock_start(self, skip_discovery=False):
@@ -189,7 +191,8 @@ def test_on_startup_prints_model_list(default_config, monkeypatch, tmp_uam_dir, 
     async def mock_stop(self):
         pass
 
-    with patch("uam.__main__.get_config", return_value=default_config), \
+    with caplog.at_level(logging.INFO, logger="uam"), \
+         patch("uam.__main__.get_config", return_value=default_config), \
          patch("uam.__main__.ModelRouter.start", mock_start), \
          patch("uam.__main__.ModelRouter.stop", mock_stop), \
          patch("uam.__main__.web.run_app") as mock_run:
@@ -203,9 +206,9 @@ def test_on_startup_prints_model_list(default_config, monkeypatch, tmp_uam_dir, 
         mock_run.side_effect = fake_run_app
         main()
 
-    captured = capsys.readouterr()
-    assert "claude-sonnet-4-6" in captured.out
-    assert "anthropic" in captured.out
+    log_text = caplog.text
+    assert "claude-sonnet-4-6" in log_text
+    assert "anthropic" in log_text
 
 
 def test_listen_from_config(default_config, monkeypatch, tmp_uam_dir):

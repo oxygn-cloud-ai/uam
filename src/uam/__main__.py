@@ -27,13 +27,12 @@ def main():
 
     async def on_startup(app: web.Application):
         msg = "Skipping discovery..." if skip_discovery else "Starting model discovery..."
-        print(msg)
+        logger.info(msg)
         await router.start(skip_discovery=skip_discovery)
-        print(f"\nReady — {router.model_count()} models available")
-        print(f"Listening on http://{host}:{port}\n")
+        logger.info("Ready — %d models available", router.model_count())
+        logger.info("Listening on http://%s:%d", host, port)
         for m in router.list_models():
-            print(f"  {m['id']:60s} → {m['backend']:12s} ({m['original_model']})")
-        print()
+            logger.info("  %-60s → %-12s (%s)", m['id'], m['backend'], m['original_model'])
 
         PID_FILE.parent.mkdir(parents=True, exist_ok=True)
         PID_FILE.write_text(str(os.getpid()))
