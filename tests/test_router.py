@@ -273,10 +273,86 @@ async def test_router_refresh_clears_non_anthropic(default_config):
 
         await router.refresh()
 
-    # Anthropic should remain, openrouter:test gone, local:new added
+    # Anthropic should remain (rebuilt from config), openrouter:test gone, local:new added
     assert "claude-sonnet-4-6" in router.routes
     assert "openrouter:test" not in router.routes
     assert "local:new" in router.routes
+
+
+async def test_router_refresh_rereads_config_from_disk(default_config, tmp_path, monkeypatch):
+    """refresh() must re-read config.json so newly-added local.servers are picked up."""
+    import uam.config as config_mod
+    import json
+
+    cfg_path = tmp_path / "config.json"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    starting = default_config.copy()
+    starting["local"] = {"probe_ports": [], "servers": [], "timeout": 120}
+    cfg_path.write_text(json.dumps(starting))
+
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg_path)
+    monkeypatch.setattr(config_mod, "CONFIG_DIR", cfg_path.parent)
+
+    router = ModelRouter(starting)
+    router.session = AsyncMock()
+    router.routes = {}
+
+    # External actor (e.g. POST /config/local-servers) writes a new server.
+    on_disk = json.loads(cfg_path.read_text())
+    on_disk["local"]["servers"] = [
+        {"url": "http://192.0.2.99:11434", "api_format": "openai"}
+    ]
+    cfg_path.write_text(json.dumps(on_disk))
+
+    seen_configs: list[dict] = []
+
+    async def fake_discover():
+        # Capture the config that discover sees so we can assert it includes
+        # the new server.
+        seen_configs.append(router.config)
+
+    with patch.object(router, "discover", side_effect=fake_discover), \
+         patch("uam.router.save_state"):
+        await router.refresh()
+
+    assert len(seen_configs) == 1
+    assert seen_configs[0]["local"]["servers"] == [
+        {"url": "http://192.0.2.99:11434", "api_format": "openai"}
+    ]
+
+
+async def test_router_refresh_rebuilds_anthropic_from_new_config(default_config, tmp_path, monkeypatch):
+    """If anthropic config changed on disk, refresh() must rebuild Anthropic routes."""
+    import uam.config as config_mod
+    import json
+
+    cfg_path = tmp_path / "config.json"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(json.dumps(default_config))
+
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg_path)
+    monkeypatch.setattr(config_mod, "CONFIG_DIR", cfg_path.parent)
+
+    router = ModelRouter(default_config)
+    router.session = AsyncMock()
+    # Stale Anthropic route from initial start
+    router.routes = {
+        "claude-sonnet-4-6": {
+            "backend": "anthropic", "url": "http://stale", "api_key": "old",
+            "original_model": "claude-sonnet-4-6", "api_format": "anthropic", "timeout": 600,
+        }
+    }
+
+    # Update on-disk config to a new Anthropic URL
+    on_disk = json.loads(cfg_path.read_text())
+    on_disk["anthropic"]["url"] = "https://new-anthropic.example"
+    cfg_path.write_text(json.dumps(on_disk))
+
+    with patch.object(router, "discover", new_callable=AsyncMock), \
+         patch("uam.router.save_state"):
+        await router.refresh()
+
+    assert router.routes["claude-sonnet-4-6"]["url"] == "https://new-anthropic.example"
 
 
 # --- resolve ---

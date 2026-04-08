@@ -2,8 +2,8 @@
 
 > **A transparent proxy that lets Claude Code use any AI model** — Anthropic, OpenRouter, RunPod, Ollama, vLLM, llama.cpp, and more — without changing your workflow.
 
-[![Version](https://img.shields.io/badge/version-0.4.17-blue)](https://github.com/oxygn-cloud-ai/uam/releases)
-[![Tests](https://img.shields.io/badge/tests-374_passing-brightgreen)](#contributing)
+[![Version](https://img.shields.io/badge/version-0.4.19-blue)](https://github.com/oxygn-cloud-ai/uam/releases)
+[![Tests](https://img.shields.io/badge/tests-405_passing-brightgreen)](#contributing)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11+-blue)](https://www.python.org/)
 
@@ -562,7 +562,7 @@ uam takes security seriously. The proxy is a privileged process — it sees ever
 
 | Symptom | Fix |
 |---------|-----|
-| Local server not appearing | Make sure server is running, check it's on a probed port (11434/8000/8080/2242/5000/3000) or in `local.servers`, then `/uam refresh` |
+| Local server not appearing | Make sure server is running, check it's on a probed port (11434/8000/8080/2242/5000/3000) or in `local.servers`, then `/uam refresh`. To add a new remote server without editing JSON, use `/uam add-server`. |
 | Remote server unreachable | Test with `curl http://your-server:port/v1/models` or `curl http://your-server:port/api/tags` |
 | OpenRouter empty | `echo $OPENROUTER_API_KEY` to verify it's set, then `/uam refresh` |
 | RunPod empty | Verify `echo $RUNPOD_API_KEY`, check pods are RUNNING with port 8000 exposed |
@@ -634,8 +634,26 @@ curl http://127.0.0.1:5100/state | python3 -m json.tool
 ### Trigger re-discovery
 
 ```bash
-curl -X POST http://127.0.0.1:5100/refresh
+curl -X POST http://127.0.0.1:5100/refresh \
+  -H "Authorization: Bearer $(cat ~/.uam/token)"
 ```
+
+### Add a remote local backend (re-runnable)
+
+Prefer the `/uam add-server` slash command, which handles probing and discovery for you. Equivalent curl:
+
+```bash
+curl -X POST http://127.0.0.1:5100/config/local-servers \
+  -H "Authorization: Bearer $(cat ~/.uam/token)" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "http://192.168.1.50:11434", "api_format": "openai"}'
+
+# Then trigger discovery so the new backend's models become available:
+curl -X POST http://127.0.0.1:5100/refresh \
+  -H "Authorization: Bearer $(cat ~/.uam/token)"
+```
+
+This persists to `~/.uam/config.json` (idempotent — duplicates are silently dropped) so the server is permanently registered. URL normalization: a missing scheme defaults to `http://`; trailing slashes are stripped. Only `http://` and `https://` schemes are accepted.
 
 ### Test backends directly
 

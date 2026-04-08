@@ -2,7 +2,7 @@
 
 **uam** (Use Any Model) is a multi-backend model router for Claude Code. It runs as a transparent HTTP proxy on `localhost:5100`, sitting between Claude Code and AI backends -- Anthropic, RunPod, OpenRouter, and local model servers. It swaps the default model, translates between Anthropic and OpenAI API formats, enforces model on/off state, and auto-discovers models from all configured backends.
 
-Version: 0.4.8
+Version: 0.4.19
 
 ---
 
@@ -159,7 +159,9 @@ Key responsibilities:
 Loads and parses `~/.uam/config.json`.
 
 Key responsibilities:
-- **`get_config()`**: Reads config from disk. Falls back to `default_config()` if the file does not exist.
+- **`get_config()`**: Reads config from disk. Falls back to `default_config()` if the file does not exist. Pure read — does not write.
+- **`ensure_config_exists()`**: First-run bootstrap — materializes `~/.uam/config.json` with `default_config()` content if missing. Idempotent (existing user config is never overwritten). Called from `__main__.main()` on every proxy startup so users always have a real file to edit.
+- **`add_local_server(url, api_format)`**: Re-runnable helper that appends a remote local-backend server to `local.servers` in `~/.uam/config.json`. Normalizes the URL (prepends `http://` if no scheme, strips trailing slash), rejects non-`http(s)` schemes, dedupes against existing entries, atomically writes the file via temp + `os.replace()`. Used by the `POST /config/local-servers` endpoint and the `/uam add-server` slash command.
 - **`resolve_key()`**: Takes an environment variable name, returns its value via `os.environ.get()`. Never logs or stores the resolved value.
 - **`parse_listen()`**: Parses the `listen` field (format: `host:port`) into a tuple. Defaults to `127.0.0.1:5100`.
 - **Default config:** Includes Anthropic (api.anthropic.com), RunPod (empty accounts), OpenRouter (openrouter.ai/api), and local (probe ports 11434, 8000, 8080, 2242, 5000, 3000 covering Ollama, vLLM, Aphrodite, TabbyAPI, and TGI; `"servers": []` for explicit server URLs).
@@ -212,6 +214,7 @@ Probes localhost ports and explicit server URLs for running model servers (Ollam
 | GET    | `/health`                  | Health check (status, model count, current default)        |
 | GET    | `/state`                   | Get model state (default, aliases, models)                 |
 | POST   | `/state`                   | Update model state (partial merge of default/aliases/models)|
+| POST   | `/config/local-servers`    | Add a remote local backend to `~/.uam/config.json` (re-runnable; URL normalized + deduped). Caller must POST `/refresh` afterwards. |
 
 ---
 

@@ -53,9 +53,15 @@ async def _probe_server(
     for path in ["/v1/models", "/api/tags"]:
         endpoint = f"{url}{path}"
         try:
+            # Issue #46: do NOT follow redirects on probes. The scheme
+            # allowlist in `_normalize_local_server_url` only validates the
+            # stored URL; without `allow_redirects=False`, a hostile
+            # configured server could 302 us to 169.254.169.254 (cloud
+            # metadata) or another internal target on every refresh.
             async with session.get(
                 endpoint,
                 timeout=aiohttp.ClientTimeout(total=5),
+                allow_redirects=False,
             ) as resp:
                 # Only treat 2xx as a successful endpoint. 4xx/5xx means
                 # this server doesn't speak this API — try the next path.
