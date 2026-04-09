@@ -41,6 +41,20 @@ _ALLOWED_HOSTS = {
 # forwarded to the client. A misbehaving upstream that echoes the request's
 # Authorization / X-Api-Key header in its error body must not leak the user's
 # key back through the proxy.
+# CodeQL taint sanitizer: model IDs are logged for observability but
+# originate from the request body, which CodeQL treats as tainted.
+# Passing through this regex check breaks the taint chain.
+_MODEL_ID_CHARS = re.compile(r"^[\w:./\[\]\-]+$")
+
+
+def _safe_model_id(val: str) -> str:
+    """Sanitize a model ID for safe logging. Returns the value if it
+    matches expected model-ID characters, otherwise '<redacted>'."""
+    if _MODEL_ID_CHARS.match(val) and len(val) <= 512:
+        return val
+    return "<redacted>"
+
+
 _SECRET_HEADER_RE = re.compile(
     # Match "Authorization: Bearer <token>", "X-Api-Key: <token>",
     # "Bearer <token>", and similar variants. The trailing token group is
@@ -284,9 +298,9 @@ async def handle_messages(request: web.Request) -> web.StreamResponse:
 
     swapped = model != effective_model
     if swapped:
-        logger.info("Swap: %s -> %s", model, effective_model)
+        logger.info("Swap: %s -> %s", _safe_model_id(model), _safe_model_id(effective_model))
     else:
-        logger.debug("Route: %s -> %s", model, effective_model)
+        logger.debug("Route: %s -> %s", _safe_model_id(model), _safe_model_id(effective_model))
 
     is_stream = payload.get("stream", False)
 
