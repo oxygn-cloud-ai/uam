@@ -1,7 +1,7 @@
 ---
 name: uam
-description: Manage the uam model router proxy (status, start, stop, setup, add-server, list-openrouter, uninstall)
-argument-hint: "[status|start|stop|refresh|setup|add-server|list-openrouter|uninstall]"
+description: Manage the uam model router proxy (status, start, stop, setup, update, add-server, list-openrouter, uninstall)
+argument-hint: "[status|start|stop|refresh|setup|update|add-server|list-openrouter|uninstall]"
 allowed-tools:
   - Bash
   - Read
@@ -177,6 +177,76 @@ List all OpenRouter models available through the proxy in a table with pricing, 
    Options:
    - Show all
    - Filter by keyword (then ask for the keyword)
+
+## /uam update
+
+Update uam to the latest version from the repo. Pulls new code, copies updated slash commands and hooks, and restarts the proxy.
+
+1. Find the uam repo directory:
+   ```bash
+   python3 -c "import uam; import pathlib; print(pathlib.Path(uam.__file__).resolve().parent.parent.parent)"
+   ```
+   Store the result as `$UAM_REPO`.
+
+2. Show the current version:
+   ```bash
+   python3 -c "import uam; print(f'Current: v{uam.__version__}')"
+   ```
+
+3. Pull latest changes:
+   ```bash
+   git -C "$UAM_REPO" pull --ff-only 2>&1
+   ```
+   If this fails (e.g., local changes), show the error and stop. Do not force-pull.
+
+4. Show the new version and recent changelog:
+   ```bash
+   python3 -c "
+   # Re-import to pick up new version
+   import importlib, uam
+   importlib.reload(uam)
+   print(f'Updated: v{uam.__version__}')
+   "
+   git -C "$UAM_REPO" log --oneline -5
+   ```
+
+5. Copy updated slash commands and hooks to user-level directories:
+   ```bash
+   cp "$UAM_REPO/.claude/commands/uam.md" ~/.claude/commands/uam.md
+   cp "$UAM_REPO/.claude/commands/model.md" ~/.claude/commands/model.md
+   # Copy hooks if they exist
+   if [ -d "$UAM_REPO/.claude/hooks" ]; then
+     cp "$UAM_REPO/.claude/hooks/"*.py ~/.claude/hooks/ 2>/dev/null
+     chmod +x ~/.claude/hooks/uam-*.py 2>/dev/null
+   fi
+   ```
+
+6. Restart the proxy if it was running:
+   ```bash
+   WAS_RUNNING=$(curl -s --max-time 2 http://127.0.0.1:5100/health 2>/dev/null && echo yes || echo no)
+   if [ "$WAS_RUNNING" = "yes" ]; then
+     PID=$(cat ~/.uam/uam.pid 2>/dev/null)
+     [ -n "$PID" ] && kill "$PID" 2>/dev/null
+     # Also check by port in case PID file is stale
+     PPID=$(lsof -i :5100 -t 2>/dev/null)
+     [ -n "$PPID" ] && kill "$PPID" 2>/dev/null
+     rm -f ~/.uam/uam.pid
+     sleep 1
+     nohup python3 -m uam > ~/.uam/uam.log 2>&1 &
+     sleep 3
+     curl -s --max-time 5 http://127.0.0.1:5100/health
+   fi
+   ```
+
+7. Show summary:
+   ```
+   uam updated to v{version}.
+   - Slash commands: updated
+   - Hooks: updated
+   - Proxy: restarted (if was running)
+   
+   Start a new Claude Code session to pick up the updated slash commands.
+   ```
 
 ## /uam setup
 This is the one-time installation. Do the following steps:
