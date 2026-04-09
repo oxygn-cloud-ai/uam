@@ -284,11 +284,9 @@ async def handle_messages(request: web.Request) -> web.StreamResponse:
 
     swapped = model != effective_model
     if swapped:
-        logger.info("Swap: %s -> %s via %s", model, effective_model, route["backend"])
+        logger.info("Swap: %s -> %s", model, effective_model)
     else:
-        # perf M3: lazy %-formatting so f-string interpolation is skipped when
-        # debug is disabled (which is the production default).
-        logger.debug("Route: %s -> %s via %s", model, effective_model, route["backend"])
+        logger.debug("Route: %s -> %s", model, effective_model)
 
     is_stream = payload.get("stream", False)
 
