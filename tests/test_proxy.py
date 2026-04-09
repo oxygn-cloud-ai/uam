@@ -352,6 +352,51 @@ async def test_models(app_client):
     assert "default" in data
 
 
+async def test_models_default_no_metadata(app_client):
+    """GET /v1/models without query params must not include metadata."""
+    save_state({"default": "", "aliases": {}, "models": {}})
+    # Inject metadata into a route so we can verify it's excluded
+    router = app_client.app["router"]
+    router.routes["openrouter:test/model"] = {
+        "backend": "openrouter", "url": "http://or", "api_key": "k",
+        "original_model": "test/model", "api_format": "openai",
+        "metadata": {"name": "Test", "context_length": 128000},
+    }
+    resp = await app_client.get("/v1/models")
+    data = await resp.json()
+    or_model = next(m for m in data["data"] if m["id"] == "openrouter:test/model")
+    assert "metadata" not in or_model
+
+
+async def test_models_with_metadata_param(app_client):
+    """GET /v1/models?metadata=true includes metadata in response."""
+    save_state({"default": "", "aliases": {}, "models": {}})
+    router = app_client.app["router"]
+    router.routes["openrouter:test/model"] = {
+        "backend": "openrouter", "url": "http://or", "api_key": "k",
+        "original_model": "test/model", "api_format": "openai",
+        "metadata": {"name": "Test Model", "context_length": 128000},
+    }
+    resp = await app_client.get("/v1/models?metadata=true")
+    data = await resp.json()
+    or_model = next(m for m in data["data"] if m["id"] == "openrouter:test/model")
+    assert or_model["metadata"]["name"] == "Test Model"
+    assert or_model["metadata"]["context_length"] == 128000
+
+
+async def test_models_backend_filter(app_client):
+    """GET /v1/models?backend=openrouter returns only OpenRouter models."""
+    save_state({"default": "", "aliases": {}, "models": {}})
+    resp = await app_client.get("/v1/models?backend=openrouter")
+    data = await resp.json()
+    for m in data["data"]:
+        assert m["owned_by"] == "openrouter"
+    # Should not include anthropic or local models from test_routes fixture
+    ids = {m["id"] for m in data["data"]}
+    assert "claude-sonnet-4-6" not in ids
+    assert "local:qwen" not in ids
+
+
 # ---------------------------------------------------------------------------
 # Endpoint: /state GET and POST
 # ---------------------------------------------------------------------------
@@ -1518,3 +1563,193 @@ async def test_ask_upstream_error_has_retry_headers(app_client):
         )
     assert resp.status == 503
     assert resp.headers.get("x-should-retry") == "true"
+
+
+# ---------------------------------------------------------------------------
+# x-uam-model response header
+# ---------------------------------------------------------------------------
+
+
+async def test_x_uam_model_header_no_swap(app_client):
+    """x-uam-model header shows the requested model when no swap occurs."""
+    save_state({
+        "default": "claude-sonnet-4-6",
+        "aliases": {},
+        "models": {"claude-sonnet-4-6": {"enabled": True}},
+    })
+    upstream_body = json.dumps({
+        "id": "msg_hdr", "type": "message",
+        "content": [{"type": "text", "text": "ok"}],
+    })
+    with _mock_upstream(app_client) as m:
+        m.post(
+            "https://api.anthropic.com/v1/messages",
+            body=upstream_body, status=200,
+            content_type="application/json",
+        )
+        resp = await app_client.post(
+            "/v1/messages",
+            data=json.dumps({
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status == 200
+    assert resp.headers.get("x-uam-model") == "claude-sonnet-4-6"
+    assert "x-uam-swapped" not in resp.headers
+
+
+async def test_x_uam_model_header_on_swap(app_client):
+    """When default is a non-claude model, x-uam-model shows the swapped
+    model and x-uam-swapped is 'true'."""
+    save_state({
+        "default": "openrouter:google/gemini-2.0-flash",
+        "aliases": {},
+        "models": {
+            "claude-sonnet-4-6": {"enabled": True},
+            "openrouter:google/gemini-2.0-flash": {"enabled": True},
+        },
+    })
+    openai_resp = {
+        "id": "chatcmpl-swap",
+        "choices": [{"message": {"content": "swapped"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 3},
+    }
+    with _mock_upstream(app_client) as m:
+        m.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            payload=openai_resp, status=200,
+        )
+        resp = await app_client.post(
+            "/v1/messages",
+            data=json.dumps({
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 100,
+                "stream": False,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status == 200
+    assert resp.headers.get("x-uam-model") == "openrouter:google/gemini-2.0-flash"
+    assert resp.headers.get("x-uam-swapped") == "true"
+
+
+async def test_x_uam_model_header_streaming(app_client):
+    """x-uam-model header is present on streaming responses."""
+    save_state({
+        "default": "claude-sonnet-4-6",
+        "aliases": {},
+        "models": {"claude-sonnet-4-6": {"enabled": True}},
+    })
+    sse_body = b"event: message_start\ndata: {}\n\n"
+    with _mock_upstream(app_client) as m:
+        m.post(
+            "https://api.anthropic.com/v1/messages",
+            body=sse_body, status=200,
+            content_type="text/event-stream",
+        )
+        resp = await app_client.post(
+            "/v1/messages",
+            data=json.dumps({
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status == 200
+    assert resp.headers.get("x-uam-model") == "claude-sonnet-4-6"
+
+
+async def test_x_uam_model_header_translation(app_client):
+    """x-uam-model header present on translated (OpenAI-format) responses."""
+    save_state({
+        "default": "",
+        "aliases": {},
+        "models": {"openrouter:google/gemini-2.0-flash": {"enabled": True}},
+    })
+    openai_resp = {
+        "id": "chatcmpl-tr",
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 3},
+    }
+    with _mock_upstream(app_client) as m:
+        m.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            payload=openai_resp, status=200,
+        )
+        resp = await app_client.post(
+            "/v1/messages",
+            data=json.dumps({
+                "model": "openrouter:google/gemini-2.0-flash",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 100,
+                "stream": False,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status == 200
+    assert resp.headers.get("x-uam-model") == "openrouter:google/gemini-2.0-flash"
+
+
+async def test_x_uam_model_header_ask_native(app_client):
+    """handle_ask: x-uam-model header on native Anthropic ask response."""
+    save_state({
+        "default": "",
+        "aliases": {},
+        "models": {"claude-sonnet-4-6": {"enabled": True}},
+    })
+    upstream_body = json.dumps({
+        "id": "msg_ask_hdr", "type": "message",
+        "content": [{"type": "text", "text": "ok"}],
+    })
+    with _mock_upstream(app_client) as m:
+        m.post(
+            "https://api.anthropic.com/v1/messages",
+            body=upstream_body, status=200,
+            content_type="application/json",
+        )
+        resp = await app_client.post(
+            "/v1/messages/ask",
+            data=json.dumps({
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 100,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status == 200
+    assert resp.headers.get("x-uam-model") == "claude-sonnet-4-6"
+
+
+async def test_x_uam_model_header_ask_translated(app_client):
+    """handle_ask: x-uam-model header on translated ask response."""
+    save_state({
+        "default": "",
+        "aliases": {},
+        "models": {"openrouter:google/gemini-2.0-flash": {"enabled": True}},
+    })
+    openai_resp = {
+        "id": "chatcmpl-ask-hdr",
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 3},
+    }
+    with _mock_upstream(app_client) as m:
+        m.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            payload=openai_resp, status=200,
+        )
+        resp = await app_client.post(
+            "/v1/messages/ask",
+            data=json.dumps({
+                "model": "openrouter:google/gemini-2.0-flash",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 100,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status == 200
+    assert resp.headers.get("x-uam-model") == "openrouter:google/gemini-2.0-flash"

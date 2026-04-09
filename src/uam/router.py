@@ -108,13 +108,23 @@ class ModelRouter:
     def model_count(self) -> int:
         return len(self.routes)
 
-    def list_models(self) -> list[dict]:
-        """Return sorted list of all known models."""
-        return [
-            {
+    def list_models(self, include_metadata: bool = False) -> list[dict]:
+        """Return sorted list of all known models.
+
+        When include_metadata is True, each entry includes the metadata
+        dict from the route (if present). Currently only OpenRouter
+        routes carry metadata (name, pricing, context_length, modality).
+        """
+        result = []
+        for key, route in sorted(self.routes.items()):
+            entry: dict = {
                 "id": key,
                 "backend": route["backend"],
                 "original_model": route["original_model"],
             }
-            for key, route in sorted(self.routes.items())
-        ]
+            if include_metadata:
+                md = route.get("metadata")
+                if md is not None:
+                    entry["metadata"] = md
+            result.append(entry)
+        return result

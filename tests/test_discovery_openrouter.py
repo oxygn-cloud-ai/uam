@@ -103,3 +103,63 @@ class TestDiscoverOpenRouter:
             async with aiohttp.ClientSession() as session:
                 routes = await discover_openrouter(openrouter_config, session)
             assert routes == {}
+
+    async def test_discover_openrouter_captures_metadata(self, openrouter_config):
+        """Metadata (name, pricing, context_length, modality) is captured."""
+        with aioresponses() as mocked:
+            mocked.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={
+                    "data": [
+                        {
+                            "id": "google/gemini-2.0-flash",
+                            "name": "Google Gemini 2.0 Flash",
+                            "description": "Fast flash model",
+                            "context_length": 1000000,
+                            "pricing": {
+                                "prompt": "0.00001",
+                                "completion": "0.00004",
+                            },
+                            "architecture": {
+                                "modality": "text+image->text",
+                                "input_modalities": ["text", "image"],
+                                "output_modalities": ["text"],
+                                "tokenizer": "Gemini",
+                            },
+                            "top_provider": {
+                                "max_completion_tokens": 8192,
+                            },
+                        }
+                    ]
+                },
+            )
+            async with aiohttp.ClientSession() as session:
+                routes = await discover_openrouter(openrouter_config, session)
+
+        route = routes["openrouter:google/gemini-2.0-flash"]
+        md = route["metadata"]
+        assert md["name"] == "Google Gemini 2.0 Flash"
+        assert md["description"] == "Fast flash model"
+        assert md["context_length"] == 1000000
+        assert md["pricing_prompt"] == "0.00001"
+        assert md["pricing_completion"] == "0.00004"
+        assert md["modality"] == "text+image->text"
+
+    async def test_discover_openrouter_metadata_missing_fields(self, openrouter_config):
+        """Models with missing optional fields get sensible defaults."""
+        with aioresponses() as mocked:
+            mocked.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [{"id": "some/model"}]},
+            )
+            async with aiohttp.ClientSession() as session:
+                routes = await discover_openrouter(openrouter_config, session)
+
+        route = routes["openrouter:some/model"]
+        md = route["metadata"]
+        assert md["name"] == "some/model"
+        assert md["description"] == ""
+        assert md["context_length"] is None
+        assert md["pricing_prompt"] == "0"
+        assert md["pricing_completion"] == "0"
+        assert md["modality"] == ""

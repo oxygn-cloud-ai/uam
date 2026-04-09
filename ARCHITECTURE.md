@@ -2,7 +2,7 @@
 
 **uam** (Use Any Model) is a multi-backend model router for Claude Code. It runs as a transparent HTTP proxy on `localhost:5100`, sitting between Claude Code and AI backends -- Anthropic, RunPod, OpenRouter, and local model servers. It swaps the default model, translates between Anthropic and OpenAI API formats, enforces model on/off state, and auto-discovers models from all configured backends.
 
-Version: 0.4.19
+Version: 0.4.20
 
 ---
 

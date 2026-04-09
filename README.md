@@ -2,8 +2,8 @@
 
 > **A transparent proxy that lets Claude Code use any AI model** — Anthropic, OpenRouter, RunPod, Ollama, vLLM, llama.cpp, and more — without changing your workflow.
 
-[![Version](https://img.shields.io/badge/version-0.4.19-blue)](https://github.com/oxygn-cloud-ai/uam/releases)
-[![Tests](https://img.shields.io/badge/tests-405_passing-brightgreen)](#contributing)
+[![Version](https://img.shields.io/badge/version-0.4.20-blue)](https://github.com/oxygn-cloud-ai/uam/releases)
+[![Tests](https://img.shields.io/badge/tests-418_passing-brightgreen)](#contributing)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11+-blue)](https://www.python.org/)
 

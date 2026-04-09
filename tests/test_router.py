@@ -428,3 +428,35 @@ def test_router_model_count_and_list(default_config):
         assert "id" in m
         assert "backend" in m
         assert "original_model" in m
+
+
+def test_list_models_no_metadata_by_default(default_config):
+    """list_models() excludes metadata by default (backwards compat)."""
+    router = ModelRouter(default_config)
+    router.routes = {
+        "openrouter:test": {
+            "backend": "openrouter", "original_model": "test",
+            "metadata": {"name": "Test", "context_length": 128000},
+        },
+    }
+    models = router.list_models()
+    assert "metadata" not in models[0]
+
+
+def test_list_models_include_metadata(default_config):
+    """list_models(include_metadata=True) includes metadata when present."""
+    router = ModelRouter(default_config)
+    router.routes = {
+        "openrouter:test": {
+            "backend": "openrouter", "original_model": "test",
+            "metadata": {"name": "Test Model", "context_length": 128000},
+        },
+        "claude-sonnet": {
+            "backend": "anthropic", "original_model": "claude-sonnet",
+        },
+    }
+    models = router.list_models(include_metadata=True)
+    or_model = next(m for m in models if m["id"] == "openrouter:test")
+    assert or_model["metadata"] == {"name": "Test Model", "context_length": 128000}
+    claude_model = next(m for m in models if m["id"] == "claude-sonnet")
+    assert claude_model.get("metadata") is None
