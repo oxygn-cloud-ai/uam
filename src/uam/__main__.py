@@ -7,7 +7,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from uam.config import get_config, parse_listen, CONFIG_DIR
+from uam.config import ensure_config_exists, get_config, parse_listen, CONFIG_DIR
 from uam.log import setup_logging
 from uam.proxy import create_app
 from uam.router import ModelRouter
@@ -19,6 +19,10 @@ logger = logging.getLogger("uam")
 
 def main():
     setup_logging()
+    # First-run bootstrap: materialize ~/.uam/config.json with defaults so the
+    # user always has a real file to edit. Idempotent — leaves existing config
+    # untouched.
+    ensure_config_exists()
     config = get_config()
     host, port = parse_listen(config)
     skip_discovery = "--skip-discovery" in sys.argv

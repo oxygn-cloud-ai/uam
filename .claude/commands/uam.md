@@ -1,7 +1,7 @@
 ---
 name: uam
-description: Manage the uam model router proxy (status, start, stop, setup, uninstall)
-argument-hint: "[status|start|stop|refresh|setup|uninstall]"
+description: Manage the uam model router proxy (status, start, stop, setup, add-server, list-openrouter, uninstall)
+argument-hint: "[status|start|stop|refresh|setup|add-server|list-openrouter|uninstall]"
 allowed-tools:
   - Bash
   - Read
@@ -53,9 +53,130 @@ Parse `$ARGUMENTS` (case-insensitive, default to "status" if empty):
 
 ## /uam refresh
 1. Check proxy is running
-2. `curl -s -X POST http://127.0.0.1:5100/refresh`
+2. `curl -s -X POST http://127.0.0.1:5100/refresh -H "Authorization: Bearer $(cat ~/.uam/token 2>/dev/null)"`
 3. Show updated model count
 4. Then show the model list (same as /model)
+
+## /uam add-server
+
+Add a remote local-backend server (Ollama, vLLM, etc.) to ~/.uam/config.json without hand-editing JSON. Re-runnable.
+
+1. Check the proxy is running: `curl -s --max-time 2 http://127.0.0.1:5100/health`
+   If not running, tell the user: "uam proxy is not running. Use /uam start to start it."
+
+2. Ask via AskUserQuestion: "What kind of server are you adding?"
+   Options:
+   - Ollama (default port 11434)
+   - vLLM (default port 8000)
+   - llama.cpp server (default port 8080)
+   - LocalAI (default port 8080)
+   - TGI / Text Generation Inference (default port 3000)
+   - Aphrodite (default port 2242)
+   - TabbyAPI (default port 5000)
+   - Other OpenAI-compatible server
+
+3. Ask via AskUserQuestion: "Enter the server address (e.g. 192.168.1.50:11434, http://my-server:11434):"
+   - If no scheme, the proxy will prepend `http://`
+   - If no port, prepend the default port for the chosen server type before sending
+   - If the user enters just an IP/hostname with no port at all, append the default port
+
+4. Probe reachability (best-effort, do not abort on failure):
+   ```bash
+   curl -s --connect-timeout 5 "$URL/api/tags" >/dev/null 2>&1 && echo reachable || \
+   curl -s --connect-timeout 5 "$URL/v1/models" >/dev/null 2>&1 && echo reachable || \
+   echo unreachable
+   ```
+   If unreachable, warn the user but continue — the server may not be running right now.
+
+5. POST to /config/local-servers using the bearer token from `~/.uam/token`:
+   ```bash
+   TOKEN=$(cat ~/.uam/token 2>/dev/null)
+   curl -s -X POST http://127.0.0.1:5100/config/local-servers \
+     -H "Content-Type: application/json" \
+     -H "Authorization: Bearer $TOKEN" \
+     -d "{\"url\": \"$URL\", \"api_format\": \"openai\"}"
+   ```
+   - On 4xx, surface the error message from the response body and stop.
+   - On 200, the response includes the updated server list — show it.
+
+6. Trigger discovery so the new backend's models become available:
+   ```bash
+   curl -s -X POST http://127.0.0.1:5100/refresh \
+     -H "Authorization: Bearer $TOKEN"
+   ```
+
+7. Show summary: "Added {url}. Discovered N total models. Use /model to enable specific models from the new backend."
+
+## /uam list-openrouter [filter]
+
+List all OpenRouter models available through the proxy in a table with pricing, context window, and capabilities.
+
+1. Check the proxy is running:
+   ```bash
+   curl -s --max-time 2 http://127.0.0.1:5100/health
+   ```
+   If not running, tell the user: "uam proxy is not running. Use /uam start to start it."
+
+2. Fetch OpenRouter models with metadata:
+   ```bash
+   curl -s 'http://127.0.0.1:5100/v1/models?backend=openrouter&metadata=true'
+   ```
+
+3. Parse the JSON response. Each model in `data[]` has:
+   - `id` (e.g. `openrouter:google/gemini-2.0-flash`)
+   - `original_model` (e.g. `google/gemini-2.0-flash`)
+   - `enabled` (boolean)
+   - `metadata.name` (human-readable name)
+   - `metadata.context_length` (integer or null)
+   - `metadata.pricing_prompt` (cost per token as string, e.g. "0.00001")
+   - `metadata.pricing_completion` (cost per token as string)
+   - `metadata.modality` (e.g. "text+image->text")
+
+4. If $ARGUMENTS is provided, filter to models whose `original_model` or `metadata.name` contains the filter string (case-insensitive).
+
+5. Format as a table using python3 for clean column alignment:
+   ```bash
+   curl -s 'http://127.0.0.1:5100/v1/models?backend=openrouter&metadata=true' | python3 -c "
+   import json, sys
+   data = json.load(sys.stdin)
+   models = data.get('data', [])
+   # Apply filter if provided
+   f = '$ARGUMENTS'.strip().lower()
+   if f:
+       models = [m for m in models if f in m.get('original_model','').lower() or f in m.get('metadata',{}).get('name','').lower()]
+   # Format context length
+   def fmt_ctx(n):
+       if not n: return '?'
+       if n >= 1000000: return f'{n//1000000}M'
+       return f'{n//1000}K'
+   # Format price per 1M tokens
+   def fmt_price(s):
+       try:
+           p = float(s) * 1000000
+           if p == 0: return 'free'
+           if p < 0.01: return f'\${p:.4f}'
+           return f'\${p:.2f}'
+       except: return '?'
+   print(f'OpenRouter Models ({len(models)} shown)\n')
+   print(f'{\"Model\":<45} {\"Context\":>8} {\"In/1M\":>10} {\"Out/1M\":>10} {\"Modality\":<20}')
+   print('-' * 95)
+   for m in sorted(models, key=lambda x: x.get('original_model','')):
+       md = m.get('metadata', {})
+       name = m.get('original_model', m['id'])
+       ctx = fmt_ctx(md.get('context_length'))
+       pin = fmt_price(md.get('pricing_prompt', '0'))
+       pout = fmt_price(md.get('pricing_completion', '0'))
+       mod = md.get('modality', '')
+       en = '[x]' if m.get('enabled') else '[ ]'
+       print(f'{en} {name:<42} {ctx:>8} {pin:>10} {pout:>10} {mod:<20}')
+   "
+   ```
+
+6. If there are more than 50 models and no filter was provided, ask via AskUserQuestion:
+   "There are N OpenRouter models. Would you like to filter by keyword?"
+   Options:
+   - Show all
+   - Filter by keyword (then ask for the keyword)
 
 ## /uam setup
 This is the one-time installation. Do the following steps:

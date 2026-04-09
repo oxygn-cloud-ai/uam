@@ -9,6 +9,7 @@ import time
 import aiohttp
 from aiohttp import web
 
+from uam.config import add_local_server
 from uam.log import redact_headers
 from uam.router import ModelRouter
 from uam.state import load_state, save_state, is_enabled, get_default, write_env_file
@@ -40,6 +41,20 @@ _ALLOWED_HOSTS = {
 # forwarded to the client. A misbehaving upstream that echoes the request's
 # Authorization / X-Api-Key header in its error body must not leak the user's
 # key back through the proxy.
+# CodeQL taint sanitizer: model IDs are logged for observability but
+# originate from the request body, which CodeQL treats as tainted.
+# Passing through this regex check breaks the taint chain.
+_MODEL_ID_CHARS = re.compile(r"^[\w:./\[\]\-]+$")
+
+
+def _safe_model_id(val: str) -> str:
+    """Sanitize a model ID for safe logging. Returns the value if it
+    matches expected model-ID characters, otherwise '<redacted>'."""
+    if _MODEL_ID_CHARS.match(val) and len(val) <= 512:
+        return val
+    return "<redacted>"
+
+
 _SECRET_HEADER_RE = re.compile(
     # Match "Authorization: Bearer <token>", "X-Api-Key: <token>",
     # "Bearer <token>", and similar variants. The trailing token group is
@@ -141,6 +156,7 @@ async def host_header_middleware(request: web.Request, handler):
 _AUTH_REQUIRED_ENDPOINTS = {
     ("POST", "/state"),
     ("POST", "/refresh"),
+    ("POST", "/config/local-servers"),
 }
 
 
@@ -181,6 +197,7 @@ def create_app(router: ModelRouter) -> web.Application:
     app.router.add_get("/health", handle_health)
     app.router.add_get("/state", handle_get_state)
     app.router.add_post("/state", handle_post_state)
+    app.router.add_post("/config/local-servers", handle_post_local_servers)
 
     return app
 
@@ -279,19 +296,23 @@ async def handle_messages(request: web.Request) -> web.StreamResponse:
             headers={"x-should-retry": "false"},
         )
 
-    # perf M3: lazy %-formatting so f-string interpolation is skipped when
-    # debug is disabled (which is the production default).
-    logger.debug("Route: %s -> %s via %s", model, effective_model, route["backend"])
+    swapped = model != effective_model
+    if swapped:
+        logger.info("Swap: %s -> %s", _safe_model_id(model), _safe_model_id(effective_model))
+    else:
+        logger.debug("Route: %s -> %s", _safe_model_id(model), _safe_model_id(effective_model))
 
     is_stream = payload.get("stream", False)
 
     if _needs_translation(route):
         return await _proxy_with_translation(
-            request, router, route, payload, effective_model, is_stream
+            request, router, route, payload, effective_model, is_stream,
+            swapped=swapped,
         )
     else:
         return await _proxy_anthropic_native(
-            request, router, route, payload, is_stream
+            request, router, route, payload, is_stream,
+            effective_model=effective_model, swapped=swapped,
         )
 
 
@@ -301,6 +322,8 @@ async def _proxy_anthropic_native(
     route: dict,
     payload: dict,
     is_stream: bool,
+    effective_model: str = "",
+    swapped: bool = False,
 ) -> web.StreamResponse:
     """Forward request directly to Anthropic-compatible backend."""
     payload["model"] = route["original_model"]
@@ -326,6 +349,11 @@ async def _proxy_anthropic_native(
                     headers=resp_headers,
                 )
                 _forward_response_headers(upstream, resp)
+                # Set x-uam-model AFTER _forward_response_headers so an
+                # upstream x-uam-model can't overwrite ours.
+                resp.headers["x-uam-model"] = effective_model
+                if swapped:
+                    resp.headers["x-uam-swapped"] = "true"
                 await resp.prepare(request)
                 async for chunk in upstream.content.iter_any():
                     await resp.write(chunk)
@@ -342,6 +370,9 @@ async def _proxy_anthropic_native(
                     headers=retry_hdrs,
                 )
                 _forward_response_headers(upstream, resp)
+                resp.headers["x-uam-model"] = effective_model
+                if swapped:
+                    resp.headers["x-uam-swapped"] = "true"
                 return resp
     except Exception as e:
         # SEC-010: do not leak str(e) — it may contain pod ids, full URLs,
@@ -362,6 +393,7 @@ async def _proxy_with_translation(
     payload: dict,
     effective_model: str,
     is_stream: bool,
+    swapped: bool = False,
 ) -> web.StreamResponse:
     """Forward request to OpenAI-compatible backend with format translation."""
     # Translate request
@@ -391,7 +423,10 @@ async def _proxy_with_translation(
                 resp_headers = {
                     "Content-Type": "text/event-stream",
                     "Cache-Control": "no-cache",
+                    "x-uam-model": effective_model,
                 }
+                if swapped:
+                    resp_headers["x-uam-swapped"] = "true"
                 resp_headers.update(retry_hdrs)
                 resp = web.StreamResponse(
                     status=200 if upstream.status < 400 else upstream.status,
@@ -477,6 +512,9 @@ async def _proxy_with_translation(
                 # upstream so Claude Code sees the same headers it would on
                 # the native Anthropic path.
                 _forward_response_headers(upstream, resp)
+                resp.headers["x-uam-model"] = effective_model
+                if swapped:
+                    resp.headers["x-uam-swapped"] = "true"
                 return resp
     except Exception as e:
         # SEC-010: do not leak str(e) — it may contain pod ids, full URLs,
@@ -617,7 +655,9 @@ async def handle_ask(request: web.Request) -> web.StreamResponse:
                     )
                 data = await upstream.json()
                 anthropic_resp = openai_to_anthropic(data, model)
-                return web.json_response(anthropic_resp)
+                resp = web.json_response(anthropic_resp)
+                resp.headers["x-uam-model"] = model
+                return resp
         except Exception as e:
             # SEC-010: log full detail; return generic message.
             logger.exception("Upstream proxy error: %s", e)
@@ -639,11 +679,13 @@ async def handle_ask(request: web.Request) -> web.StreamResponse:
             ) as upstream:
                 retry_hdrs = _retry_headers(upstream.status, upstream.headers) if upstream.status >= 400 else {}
                 data = await upstream.read()
-                return web.Response(
+                resp = web.Response(
                     body=data, status=upstream.status,
                     content_type="application/json",
                     headers=retry_hdrs,
                 )
+                resp.headers["x-uam-model"] = model
+                return resp
         except Exception as e:
             # SEC-010: log full detail; return generic message.
             logger.exception("Upstream proxy error: %s", e)
@@ -712,16 +754,23 @@ async def handle_count_tokens(request: web.Request) -> web.Response:
 async def handle_models(request: web.Request) -> web.Response:
     router: ModelRouter = request.app["router"]
     state = _get_state()
+    include_metadata = request.query.get("metadata") == "true"
+    backend_filter = request.query.get("backend")
     models = []
-    for m in router.list_models():
+    for m in router.list_models(include_metadata=include_metadata):
+        if backend_filter and m["backend"] != backend_filter:
+            continue
         enabled = is_enabled(m["id"], state)
-        models.append({
+        entry: dict = {
             "id": m["id"],
             "object": "model",
             "owned_by": m["backend"],
             "original_model": m["original_model"],
             "enabled": enabled,
-        })
+        }
+        if include_metadata and "metadata" in m:
+            entry["metadata"] = m["metadata"]
+        models.append(entry)
     return web.json_response({
         "object": "list",
         "data": models,
@@ -799,3 +848,60 @@ async def handle_post_state(request: web.Request) -> web.Response:
             logger.warning("Failed to write env file: %s", e)
         _invalidate_state_cache()
     return web.json_response({"status": "ok", "state": state})
+
+
+async def handle_post_local_servers(request: web.Request) -> web.Response:
+    """Add a remote local-backend server to ~/.uam/config.json.
+
+    Body: {"url": "...", "api_format": "openai" | "anthropic"}
+
+    The caller is expected to POST /refresh after this to actually
+    discover models on the new backend. Auth: requires the same token-or-
+    no-Origin trust path as POST /state and POST /refresh, since this
+    mutates persistent state and adds an SSRF target that subsequent
+    /refresh calls will probe.
+    """
+    body = await request.read()
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response(
+            {"error": {"type": "invalid_request_error", "message": "Invalid JSON"}},
+            status=400,
+        )
+    if not isinstance(payload, dict):
+        return web.json_response(
+            {"error": {"type": "invalid_request_error", "message": "Expected JSON object"}},
+            status=400,
+        )
+
+    url = payload.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return web.json_response(
+            {"error": {"type": "invalid_request_error", "message": "url is required"}},
+            status=400,
+        )
+    api_format = payload.get("api_format", "openai")
+    if api_format not in {"openai", "anthropic"}:
+        return web.json_response(
+            {"error": {"type": "invalid_request_error",
+                       "message": "api_format must be 'openai' or 'anthropic'"}},
+            status=400,
+        )
+
+    try:
+        servers = await asyncio.to_thread(add_local_server, url, api_format)
+    except ValueError as e:
+        return web.json_response(
+            {"error": {"type": "invalid_request_error", "message": str(e)}},
+            status=400,
+        )
+    except OSError as e:
+        logger.exception("Failed to write config: %s", e)
+        return web.json_response(
+            {"error": {"type": "config_write_error",
+                       "message": "failed to write config file"}},
+            status=500,
+        )
+
+    return web.json_response({"status": "ok", "servers": servers})

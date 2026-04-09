@@ -32,6 +32,15 @@ async def discover_openrouter(config: dict, session: aiohttp.ClientSession) -> d
         for m in data.get("data", []):
             model_id = m["id"]
             route_key = f"openrouter:{model_id}"
+            pricing = m.get("pricing", {})
+            metadata = {
+                "name": m.get("name", model_id),
+                "description": m.get("description", ""),
+                "context_length": m.get("context_length"),
+                "pricing_prompt": pricing.get("prompt", "0"),
+                "pricing_completion": pricing.get("completion", "0"),
+                "modality": m.get("architecture", {}).get("modality", ""),
+            }
             routes[route_key] = {
                 "backend": "openrouter",
                 "url": url,
@@ -39,6 +48,7 @@ async def discover_openrouter(config: dict, session: aiohttp.ClientSession) -> d
                 "original_model": model_id,
                 "api_format": "openai",
                 "timeout": timeout,
+                "metadata": metadata,
             }
         logger.info(f"[openrouter] discovered {len(routes)} models")
     except Exception as e:

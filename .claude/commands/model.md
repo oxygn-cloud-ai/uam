@@ -75,6 +75,8 @@ If not running, tell the user: "uam proxy is not running. Use /uam start to star
      ```bash
      curl -s -X POST http://127.0.0.1:5100/state -H "Content-Type: application/json" -d '{"default": "selected-model-id"}'
      ```
+   - After a successful default change, show a confirmation message:
+     "Default changed to {model-id}. The switch takes effect immediately — your next message will be routed to {model-id} via {backend}. The proxy adds an `x-uam-model` response header to every response showing which model actually served it."
 
 7. After any changes, show the updated model list again.
 

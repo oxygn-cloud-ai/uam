@@ -7,7 +7,7 @@ import aiohttp
 
 logger = logging.getLogger("uam.router")
 
-from uam.config import get_backend_timeout, resolve_key
+from uam.config import get_backend_timeout, get_config, resolve_key
 from uam.discovery.anthropic import ALIASES as ANTHROPIC_ALIASES
 from uam.discovery.anthropic import discover_anthropic
 from uam.discovery.local import discover_local
@@ -59,9 +59,16 @@ class ModelRouter:
                 logger.error(f"Discovery error: {result}")
 
     async def refresh(self):
-        """Clear non-Anthropic routes and re-discover."""
-        self.routes = {k: v for k, v in self.routes.items()
-                       if v["backend"] == "anthropic"}
+        """Re-read config from disk and rebuild all routes from scratch.
+
+        Re-reading config is required so that newly-added local backends
+        (e.g. via POST /config/local-servers) and any other config edits
+        are picked up without a full proxy restart. Anthropic routes are
+        rebuilt from the fresh config, not preserved, so changed
+        api_key_env / url / timeout values also take effect on /refresh.
+        """
+        self.config = get_config()
+        self.routes = dict(discover_anthropic(self.config))
         await self.discover()
         self._sync_state()
 
@@ -101,13 +108,23 @@ class ModelRouter:
     def model_count(self) -> int:
         return len(self.routes)
 
-    def list_models(self) -> list[dict]:
-        """Return sorted list of all known models."""
-        return [
-            {
+    def list_models(self, include_metadata: bool = False) -> list[dict]:
+        """Return sorted list of all known models.
+
+        When include_metadata is True, each entry includes the metadata
+        dict from the route (if present). Currently only OpenRouter
+        routes carry metadata (name, pricing, context_length, modality).
+        """
+        result = []
+        for key, route in sorted(self.routes.items()):
+            entry: dict = {
                 "id": key,
                 "backend": route["backend"],
                 "original_model": route["original_model"],
             }
-            for key, route in sorted(self.routes.items())
-        ]
+            if include_metadata:
+                md = route.get("metadata")
+                if md is not None:
+                    entry["metadata"] = md
+            result.append(entry)
+        return result
