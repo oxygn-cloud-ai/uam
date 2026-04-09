@@ -128,6 +128,26 @@ def test_ensure_config_exists_idempotent(tmp_path, monkeypatch):
     assert first == second
 
 
+def test_ensure_config_exists_blocks_symlink(tmp_path, monkeypatch):
+    """O_EXCL must prevent writing through a pre-existing symlink."""
+    import os
+
+    cfg_dir = tmp_path / "symlink_test"
+    cfg_dir.mkdir()
+    target = cfg_dir / "target.json"
+    target.write_text('{"original": true}')
+    cfg_path = cfg_dir / "config.json"
+    os.symlink(str(target), str(cfg_path))
+
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg_path)
+    monkeypatch.setattr(config_mod, "CONFIG_DIR", cfg_dir)
+
+    ensure_config_exists()
+
+    # Symlink target must NOT be overwritten
+    assert json.loads(target.read_text()) == {"original": True}
+
+
 # ---------------------------------------------------------------------------
 # add_local_server — re-runnable backend addition
 # ---------------------------------------------------------------------------

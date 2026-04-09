@@ -216,6 +216,13 @@ Probes localhost ports and explicit server URLs for running model servers (Ollam
 | POST   | `/state`                   | Update model state (partial merge of default/aliases/models)|
 | POST   | `/config/local-servers`    | Add a remote local backend to `~/.uam/config.json` (re-runnable; URL normalized + deduped). Caller must POST `/refresh` afterwards. |
 
+**Response headers** added by the proxy to every proxied response (`/v1/messages`, `/v1/messages/ask`):
+
+| Header | When | Value |
+|--------|------|-------|
+| `x-uam-model` | Every proxied response | The uam model ID that actually served the request (e.g. `local:qwen3-coder-next:latest`) |
+| `x-uam-swapped` | Default swap occurred | `true` — indicates the requested claude-* model was swapped to the configured default |
+
 ---
 
 ## 6. State Files

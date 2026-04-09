@@ -46,7 +46,20 @@ def ensure_config_exists() -> Path:
     if CONFIG_PATH.exists():
         return CONFIG_PATH
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(default_config(), indent=2) + "\n")
+    content = json.dumps(default_config(), indent=2) + "\n"
+    try:
+        # O_CREAT|O_EXCL atomically creates the file and fails if it already
+        # exists — including symlinks. This prevents: (a) a symlink attack
+        # where a pre-planted symlink redirects the write to an attacker-
+        # controlled path, and (b) the TOCTOU race between our exists()
+        # check and the write when two processes start concurrently.
+        fd = os.open(str(CONFIG_PATH), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        try:
+            os.write(fd, content.encode())
+        finally:
+            os.close(fd)
+    except FileExistsError:
+        pass  # Another process created it between our exists() check and open()
     return CONFIG_PATH
 
 
